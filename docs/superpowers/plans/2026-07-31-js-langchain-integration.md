@@ -876,7 +876,7 @@ describe("video content blocks", () => {
     const { model, calls } = mockChat(() => jsonResponse(completion()));
     await model.invoke([new HumanMessage({ content: [{ type: "video", base64: "AAAA", mime_type: "video/mp4" }] as never })]);
     const part = lastContent(calls)[0]!;
-    expect(part).toEqual({ type: "file", file: { file_data: "data:video/mp4;base64,AAAA" } });
+    expect(part).toEqual({ type: "file", file: { file_data: "data:video/mp4;base64,AAAA", format: "video/mp4" } });
   });
 
   it("rewrites a file_id video block", async () => {
@@ -924,16 +924,19 @@ type VideoBlock = { type: "video"; url?: string; base64?: string; file_id?: stri
 function convertVideoBlock(block: VideoBlock): Record<string, unknown> {
   let mime = block.mime_type;
   let file: Record<string, unknown>;
-  if (block.url) {
+  // Key-existence checks (not truthiness) to match Python's `"url" in block`.
+  if ("url" in block) {
     file = { file_data: block.url };
-  } else if (block.base64) {
+  } else if ("base64" in block) {
     mime = mime ?? "video/mp4";
     file = { file_data: `data:${mime};base64,${block.base64}` };
-  } else if (block.file_id) {
+  } else if ("file_id" in block) {
     file = { file_id: block.file_id };
   } else {
     throw new InterfazeError("Video content block requires one of 'url', 'base64', or 'file_id'.");
   }
+  // Python stamps `format` whenever mime is truthy (always, for base64). Match it.
+  if (mime) file.format = mime;
   const filename = block.extras?.filename;
   if (filename) file.filename = filename;
   return { type: "file", file };
