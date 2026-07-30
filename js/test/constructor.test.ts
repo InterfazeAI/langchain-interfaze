@@ -33,9 +33,9 @@ describe("ChatInterfaze constructor", () => {
     expect(() => new ChatInterfaze()).not.toThrow();
   });
 
-  it("is not lc-serializable", () => {
-    expect(ChatInterfaze.prototype.constructor).toBeTypeOf("function");
-    expect(new ChatInterfaze({ apiKey: "t" }).is_lc_serializable()).toBe(false);
+  it("is not lc-serializable (closes the real langchain-core serialization gate)", () => {
+    const model = new ChatInterfaze({ apiKey: "t" });
+    expect(model.lc_serializable).toBe(false);
   });
 
   it("injects the precontext field into the request body", async () => {

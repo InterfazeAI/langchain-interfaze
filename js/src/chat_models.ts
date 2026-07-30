@@ -22,9 +22,8 @@ export class ChatInterfaze extends ChatOpenAICompletions {
       configuration: { baseURL: INTERFAZE_BASE_URL, ...configuration },
       modelKwargs: precontext !== undefined ? { ...modelKwargs, precontext } : modelKwargs,
     });
-  }
-
-  is_lc_serializable(): boolean {
-    return false;
+    // BaseChatOpenAI sets lc_serializable = true; override for Python SDK parity
+    // (this class is not intended to round-trip through LangChain's serialization).
+    this.lc_serializable = false;
   }
 }
