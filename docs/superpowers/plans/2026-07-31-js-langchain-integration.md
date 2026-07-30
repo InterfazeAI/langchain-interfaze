@@ -4,22 +4,23 @@
 
 **Goal:** Add a TypeScript LangChain integration (`@interfaze/langchain`, class `ChatInterfaze`) to this repo alongside the existing Python package, at behavioral parity with the Python `ChatInterfaze`.
 
-**Architecture:** Reorganize the repo into `python/` + `js/`. The JS package subclasses `ChatOpenAICompletions` from `@langchain/openai` (the class that does the real Chat Completions work; the public `ChatOpenAI` is only a dispatcher) and overrides the constructor, `_generate`, `_streamResponseChunks`, and `_streamChatModelEvents` to inject `precontext`, rewrite video content blocks, surface Interfaze side-fields (`precontext`/`reasoning`/`vcache`), and strip `<think>`/`<precontext>` side-channel tags. It consumes `SideChannelFilter` + `stripSideChannels` from the `interfaze` SDK (interfaze-js), which gains those two exports.
+**Architecture:** Reorganize the repo into `python/` + `js/`. The JS package subclasses `ChatOpenAICompletions` from `@langchain/openai` (the class that does the real Chat Completions work; the public `ChatOpenAI` is only a dispatcher) and overrides the constructor, `_generate`, `_streamResponseChunks`, and `_streamChatModelEvents` to inject `precontext`, rewrite video content blocks, surface Interfaze side-fields (`precontext`/`reasoning`/`vcache`), and strip `<think>`/`<precontext>` side-channel tags. It vendors `SideChannelFilter` + `stripSideChannels` locally (copied from the interfaze-js SDK, which is left untouched) and imports only `INTERFAZE_BASE_URL` / `INTERFAZE_MODEL` / `InterfazeError` from the published `interfaze` package.
 
-**Tech Stack:** TypeScript (ES2022, NodeNext, strict), `@langchain/openai` 1.5.5, `@langchain/core` ^1.2.2, `interfaze` >=1.0.3, `zod` (optional peer), tsup (dual ESM/CJS), vitest, prettier, publint + are-the-types-wrong. Python side unchanged (uv, pytest, ruff, mypy).
+**Tech Stack:** TypeScript (ES2022, NodeNext, strict), `@langchain/openai` 1.5.5, `@langchain/core` ^1.2.2, `interfaze` >=1.0.2, `zod` (optional peer), tsup (dual ESM/CJS), vitest, prettier, publint + are-the-types-wrong. Python side unchanged (uv, pytest, ruff, mypy).
 
 ## Global Constraints
 
 - **npm name:** `@interfaze/langchain`. **JSR name:** `@interfaze-ai/langchain` (the base SDK's JSR scope is `@interfaze-ai`, its npm name is unscoped `interfaze`).
 - **Pin `@langchain/openai` to exact `1.5.5`** (peerDep). The overrides ride on `@internal`/`@deprecated` surface that can shift on a minor bump.
-- **Peer deps:** `@langchain/openai` `1.5.5`, `@langchain/core` `^1.2.2`, `interfaze` `>=1.0.3`; `zod` optional peer (`peerDependenciesMeta.zod.optional = true`).
+- **Peer deps:** `@langchain/openai` `1.5.5`, `@langchain/core` `^1.2.2`, `interfaze` `>=1.0.2`; `zod` optional peer (`peerDependenciesMeta.zod.optional = true`).
+- **Side-channel helpers are VENDORED**, not imported from `interfaze`. interfaze-js is mid-refactor on an uncommitted feature branch and must be left untouched (user decision, 2026-07-31). `SideChannelFilter` + `stripSideChannels` live in `js/src/side_channels.ts`. From `interfaze` we import ONLY `INTERFAZE_BASE_URL`, `INTERFAZE_MODEL`, `InterfazeError` (all present in the published 1.0.2).
 - **Node engines:** `>=18`. Prettier `printWidth: 150`, `tabWidth: 2`, `singleQuote: false`, `trailingComma: "es5"`.
 - **Never leak `__raw_response`** on output messages — strip it after reading side-fields.
 - **All streaming surfaces must be filtered** — `.stream()` AND `.streamEvents()`. Filtering only `_streamResponseChunks` leaves `.streamEvents()` unfiltered.
 - **Interfaze constants (import, don't hardcode):** `INTERFAZE_BASE_URL = "https://api.interfaze.ai/v1"`, `INTERFAZE_MODEL = "interfaze-beta"` from `interfaze`.
 - **Side-field names:** `precontext`, `reasoning`, `vcache`. Apply each to BOTH `response_metadata` and `additional_kwargs`, only when non-null.
 - **Out of scope:** no `tasks.*` / `guard` reimplementation. `withStructuredOutput`/`bindTools` inherit — no override.
-- **Release ordering (not a code task):** interfaze-js `1.0.3` must be published to npm + JSR before the JS package's CI / publish can resolve `interfaze@>=1.0.3` from the registry. Until then, local dev installs the local interfaze-js build (Task 3).
+- **Do NOT modify the interfaze-js repo** (`/Users/mylo/Work/interfaze-js`) in any task.
 
 ---
 
@@ -30,14 +31,13 @@
 - `README.md` (root, new) — intro + links to `python/README.md` and `js/README.md`.
 - `.github/workflows/ci.yml`, `publish.yml` — split into python-scoped and js-scoped jobs.
 
-**interfaze-js (Task 2, separate repo `/Users/mylo/Work/interfaze-js`):**
-- Modify `src/stream.ts:231` (export the class), `src/index.ts:5` (re-export), `package.json` (version), `CHANGELOG.md`.
-
 **JS package (`js/`):**
 - `js/package.json`, `js/tsconfig.json`, `js/tsup.config.ts`, `js/vitest.config.ts`, `js/.prettierrc`, `js/.prettierignore`, `js/jsr.json`, `js/LICENSE`, `js/README.md`
 - `js/src/index.ts` — public re-exports.
+- `js/src/side_channels.ts` — vendored `SideChannelFilter` + `stripSideChannels` (copied verbatim from interfaze-js's `src/stream.ts`; self-contained).
 - `js/src/chat_models.ts` — `ChatInterfaze` class + private helpers (single file, mirroring Python's `chat_models.py`).
 - `js/test/helpers.ts` — mock-`fetch` test harness.
+- `js/test/side_channels.test.ts` — unit tests for the vendored helpers.
 - `js/test/*.test.ts` — unit tests.
 - `js/test/standard.test.ts` — `@langchain/standard-tests` conformance.
 
@@ -179,68 +179,196 @@ git commit -m "refactor: move Python package into python/, add root README"
 
 ---
 
-## Task 2: Export side-channel helpers from interfaze-js
+## Task 2: Vendor and test the side-channel helpers
 
-**Files (in `/Users/mylo/Work/interfaze-js`):**
-- Modify: `src/stream.ts:231`, `src/index.ts:5`, `package.json`, `CHANGELOG.md`
+> **Note:** this task assumes Task 3 (scaffold) has created `js/package.json` and installed dev deps, because it runs vitest. If executing strictly in order, do Task 3 first, then Task 2 — or run Task 2's `npm install`/`vitest` from a scaffolded `js/`. The controller may reorder Task 2 after Task 3.
+
+**Files:**
+- Create: `js/src/side_channels.ts`, `js/test/side_channels.test.ts`
 
 **Interfaces:**
-- Produces: `interfaze` package exports `SideChannelFilter` (class with `feed(text: string): string` and `flush(): string`) and `stripSideChannels(content: string): { text: string; reasoning?: string; precontext?: Precontext[] }`. Consumed by the JS `ChatInterfaze` in Tasks 6–8.
+- Produces (from `../side_channels.js`): `class SideChannelFilter` with `feed(text: string): string` and `flush(): string`; `function stripSideChannels(content: string): { text: string; reasoning?: string; precontext?: Precontext[] }`; `type Precontext = Record<string, unknown>`. Consumed by `ChatInterfaze` in Tasks 6–7.
+- Vendored verbatim from interfaze-js `src/stream.ts` (the SDK's own logic) so behavior stays identical. **Do not modify interfaze-js.**
 
-- [ ] **Step 1: Export the `SideChannelFilter` class**
+- [ ] **Step 1: Write the failing tests**
 
-In `/Users/mylo/Work/interfaze-js/src/stream.ts`, change line 231 from `class SideChannelFilter {` to:
-
+`js/test/side_channels.test.ts`:
 ```ts
+import { describe, expect, it } from "vitest";
+import { SideChannelFilter, stripSideChannels } from "../src/side_channels.js";
+
+describe("stripSideChannels", () => {
+  it("pulls out reasoning and precontext, returns clean text", () => {
+    const out = stripSideChannels(
+      "<think>because</think><precontext>[{\"name\":\"ocr\"}]</precontext>The sky is blue."
+    );
+    expect(out.text).toBe("The sky is blue.");
+    expect(out.reasoning).toBe("because");
+    expect(out.precontext).toEqual([{ name: "ocr" }]);
+  });
+
+  it("leaves plain text untouched", () => {
+    const out = stripSideChannels("just text");
+    expect(out.text).toBe("just text");
+    expect(out.reasoning).toBeUndefined();
+    expect(out.precontext).toBeUndefined();
+  });
+
+  it("ignores a malformed precontext block", () => {
+    const out = stripSideChannels("<precontext>not json</precontext>hi");
+    expect(out.text).toBe("hi");
+    expect(out.precontext).toBeUndefined();
+  });
+});
+
+describe("SideChannelFilter", () => {
+  it("strips a <think> block split across feed() calls", () => {
+    const f = new SideChannelFilter();
+    let out = "";
+    for (const piece of ["<th", "ink>secret</think>The sky ", "is blue."]) out += f.feed(piece);
+    out += f.flush();
+    expect(out).toBe("The sky is blue.");
+  });
+
+  it("passes plain content straight through", () => {
+    const f = new SideChannelFilter();
+    expect(f.feed("Hello ") + f.feed("world") + f.flush()).toBe("Hello world");
+  });
+
+  it("drops an unterminated side-channel block on flush", () => {
+    const f = new SideChannelFilter();
+    expect(f.feed("<think>partial")).toBe("");
+    expect(f.flush()).toBe("");
+  });
+});
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `cd js && npx vitest run test/side_channels.test.ts`
+Expected: FAIL (module `../src/side_channels.js` does not exist yet).
+
+- [ ] **Step 3: Vendor the helpers**
+
+Create `js/src/side_channels.ts` (copied verbatim from interfaze-js `src/stream.ts`, made self-contained with a local `Precontext` type):
+```ts
+// Vendored from the interfaze-js SDK (src/stream.ts) so the LangChain integration
+// stays self-contained. Keep in sync if the SDK's side-channel logic changes.
+
+export type Precontext = Record<string, unknown>;
+
+const TAG_RE = (tag: string) => new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g");
+
+/** Pull `<think>`/`<precontext>` blocks out of content; returns the rest as `text`. */
+export function stripSideChannels(content: string): {
+  text: string;
+  reasoning?: string;
+  precontext?: Precontext[];
+} {
+  let text = content;
+  const thinks: string[] = [];
+  text = text.replace(TAG_RE("think"), (_m, inner: string) => {
+    thinks.push(inner.trim());
+    return "";
+  });
+  const pre: Precontext[] = [];
+  text = text.replace(TAG_RE("precontext"), (_m, inner: string) => {
+    try {
+      const parsed = JSON.parse(inner.trim());
+      if (Array.isArray(parsed)) pre.push(...parsed);
+      else pre.push(parsed);
+    } catch {
+      /* ignore malformed block */
+    }
+    return "";
+  });
+  const out: { text: string; reasoning?: string; precontext?: Precontext[] } = { text: text.trim() };
+  if (thinks.length) out.reasoning = thinks.join("\n");
+  if (pre.length) out.precontext = pre;
+  return out;
+}
+
+const SIDE_OPEN = ["<think>", "<precontext>"] as const;
+const SIDE_CLOSE: Record<string, string> = { "<think>": "</think>", "<precontext>": "</precontext>" };
+
+function suffixPrefixLen(s: string, tag: string): number {
+  for (let k = Math.min(s.length, tag.length - 1); k > 0; k--) {
+    if (s.slice(s.length - k) === tag.slice(0, k)) return k;
+  }
+  return 0;
+}
+
+/** Strips inline `<think>`/`<precontext>` blocks from streamed content, chunk by chunk. */
 export class SideChannelFilter {
+  #buf = "";
+  #close: string | undefined;
+
+  feed(text: string): string {
+    this.#buf += text;
+    const out: string[] = [];
+    while (this.#buf) {
+      if (this.#close === undefined) {
+        const lt = this.#buf.indexOf("<");
+        if (lt === -1) {
+          out.push(this.#buf);
+          this.#buf = "";
+          break;
+        }
+        if (lt > 0) {
+          out.push(this.#buf.slice(0, lt));
+          this.#buf = this.#buf.slice(lt);
+        }
+        const opened = SIDE_OPEN.find((t) => this.#buf.startsWith(t));
+        if (opened) {
+          this.#close = SIDE_CLOSE[opened];
+          this.#buf = this.#buf.slice(opened.length);
+          continue;
+        }
+        if (SIDE_OPEN.some((t) => t.startsWith(this.#buf))) break;
+        out.push("<");
+        this.#buf = this.#buf.slice(1);
+      } else {
+        const close = this.#close;
+        const end = this.#buf.indexOf(close);
+        if (end === -1) {
+          const keep = suffixPrefixLen(this.#buf, close);
+          this.#buf = keep ? this.#buf.slice(this.#buf.length - keep) : "";
+          break;
+        }
+        this.#buf = this.#buf.slice(end + close.length);
+        this.#close = undefined;
+      }
+    }
+    return out.join("");
+  }
+
+  flush(): string {
+    if (this.#close !== undefined) {
+      this.#buf = "";
+      return "";
+    }
+    const rest = this.#buf;
+    this.#buf = "";
+    return rest;
+  }
+}
 ```
 
-- [ ] **Step 2: Re-export both helpers from the package index**
+- [ ] **Step 4: Run to verify pass**
 
-In `/Users/mylo/Work/interfaze-js/src/index.ts`, change line 5 from:
+Run: `cd js && npx vitest run test/side_channels.test.ts`
+Expected: all PASS.
 
-```ts
-export { InterfazeChatCompletionStream } from "./stream.js";
-```
+- [ ] **Step 5: Typecheck**
 
-to:
+Run: `cd js && npm run typecheck`
+Expected: clean (the file is a verbatim copy of code that compiles under the same strict tsconfig in interfaze-js).
 
-```ts
-export { InterfazeChatCompletionStream, SideChannelFilter, stripSideChannels } from "./stream.js";
-```
+- [ ] **Step 6: Commit**
 
-- [ ] **Step 3: Bump version and changelog**
-
-In `/Users/mylo/Work/interfaze-js/package.json` and `jsr.json`, set `"version": "1.0.3"`. Prepend a `CHANGELOG.md` entry:
-
-```markdown
-## 1.0.3
-
-- Export `SideChannelFilter` and `stripSideChannels` for downstream integrations (e.g. `@interfaze/langchain`).
-```
-
-- [ ] **Step 4: Verify interfaze-js still builds, type-checks, and tests**
-
-Run:
 ```bash
-cd /Users/mylo/Work/interfaze-js && npm run typecheck && npm run build && npm test
-```
-Expected: typecheck clean, build emits `dist/` with the new exports in `dist/index.d.ts`, all existing tests PASS.
-
-- [ ] **Step 5: Confirm the new exports resolve from the built package**
-
-Run:
-```bash
-cd /Users/mylo/Work/interfaze-js && node --input-type=module -e "import { SideChannelFilter, stripSideChannels } from './dist/index.js'; const f = new SideChannelFilter(); if (typeof f.feed !== 'function' || typeof stripSideChannels !== 'function') process.exit(1); console.log('ok');"
-```
-Expected: prints `ok`.
-
-- [ ] **Step 6: Commit (in the interfaze-js repo)**
-
-```bash
-cd /Users/mylo/Work/interfaze-js
-git add src/stream.ts src/index.ts package.json jsr.json CHANGELOG.md
-git commit -m "feat: export SideChannelFilter and stripSideChannels"
+git add js/src/side_channels.ts js/test/side_channels.test.ts
+git commit -m "feat(js): vendor side-channel helpers from the interfaze SDK"
 ```
 
 ---
@@ -298,7 +426,7 @@ git commit -m "feat: export SideChannelFilter and stripSideChannels"
   "peerDependencies": {
     "@langchain/core": "^1.2.2",
     "@langchain/openai": "1.5.5",
-    "interfaze": ">=1.0.3",
+    "interfaze": ">=1.0.2",
     "zod": "^3.23.0 || ^4.4.3"
   },
   "peerDependenciesMeta": {
@@ -311,6 +439,7 @@ git commit -m "feat: export SideChannelFilter and stripSideChannels"
     "@langchain/standard-tests": "^1.0.0",
     "@types/node": "~22.20.1",
     "@vitest/coverage-v8": "^2.1.9",
+    "interfaze": "^1.0.2",
     "prettier": "^3.9.6",
     "publint": "0.3.22",
     "tsup": "^8.5.1",
@@ -427,18 +556,15 @@ export class ChatInterfaze {}
 export { ChatInterfaze } from "./chat_models.js";
 ```
 
-- [ ] **Step 4: Install deps, with a local `interfaze` build (unpublished 1.0.3)**
+- [ ] **Step 4: Install deps**
 
-interfaze-js 1.0.3 is not on the registry yet, so `npm install` cannot resolve `interfaze@>=1.0.3`. Install the registry deps while ignoring peer resolution, then drop the locally-built `interfaze` into `node_modules` without editing `package.json`:
+`interfaze@1.0.2` is published, so a plain install resolves everything:
 
 ```bash
-cd js
-npm install --legacy-peer-deps
-npm pack /Users/mylo/Work/interfaze-js --pack-destination /tmp
-npm install --no-save --legacy-peer-deps /tmp/interfaze-1.0.3.tgz
+cd js && npm install
 ```
 
-Expected: `js/node_modules/interfaze` is version 1.0.3 and exports `SideChannelFilter` + `stripSideChannels`. `js/package.json` still lists `interfaze` only as a peer dep (unchanged).
+Expected: install succeeds; `js/node_modules/interfaze` is present and exports `INTERFAZE_BASE_URL`, `INTERFAZE_MODEL`, `InterfazeError`. (The side-channel helpers are vendored in `js/src/side_channels.ts` — Task 2 — not imported from `interfaze`.) If npm reports peer-dependency conflicts between `@langchain/openai@1.5.5` and the installed `@langchain/core`, reconcile by installing the `@langchain/core` version that satisfies the `@langchain/openai` peer range, not by forcing `--legacy-peer-deps`.
 
 - [ ] **Step 5: Verify the `ChatOpenAICompletions` import path resolves**
 
@@ -873,7 +999,7 @@ git commit -m "feat(js): rewrite video content blocks to file parts"
 - Create: `js/test/side_fields.test.ts`
 
 **Interfaces:**
-- Consumes: `stripSideChannels` from `interfaze`; `AIMessage` from `@langchain/core/messages`; `__includeRawResponse` construction flag (sets `additional_kwargs.__raw_response` on generated messages).
+- Consumes: `stripSideChannels` from `./side_channels.js` (vendored, Task 2); `AIMessage` from `@langchain/core/messages`; `__includeRawResponse` construction flag (sets `additional_kwargs.__raw_response` on generated messages).
 - Produces: side-fields (`precontext`/`reasoning`/`vcache`) copied to `response_metadata` + `additional_kwargs`; `<think>`/`<precontext>` stripped from string content; `__raw_response` removed from output.
 
 - [ ] **Step 1: Write the failing side-field tests**
@@ -945,7 +1071,7 @@ Set `__includeRawResponse: true` in the `super()` call in the constructor — ad
 Add imports:
 ```ts
 import { AIMessage } from "@langchain/core/messages";
-import { stripSideChannels } from "interfaze";
+import { stripSideChannels } from "./side_channels.js";
 ```
 
 Add module-level helpers:
@@ -1025,7 +1151,7 @@ git commit -m "feat(js): surface Interfaze side-fields and strip side-channel ta
 - Create: `js/test/stream.test.ts`
 
 **Interfaces:**
-- Consumes: `SideChannelFilter`, `stripSideChannels` from `interfaze`; `AIMessageChunk` from `@langchain/core/messages`; `ChatGenerationChunk` from `@langchain/core/outputs`; the module-level `applySideFields` helper defined in Task 6.
+- Consumes: `SideChannelFilter`, `stripSideChannels` from `./side_channels.js` (vendored, Task 2); `AIMessageChunk` from `@langchain/core/messages`; `ChatGenerationChunk` from `@langchain/core/outputs`; the module-level `applySideFields` helper defined in Task 6.
 - Produces: overridden `_streamResponseChunks(messages, options, runManager?): AsyncGenerator<ChatGenerationChunk>` that rewrites video blocks, attaches per-chunk top-level side-fields (Python parity with `_convert_chunk_to_generation_chunk`), strips `__raw_response` from every chunk, filters `<think>`/`<precontext>` from streamed text across chunk boundaries, and emits a trailing `ChatGenerationChunk` carrying the flushed tail + `reasoning`/`precontext`.
 
 - [ ] **Step 1: Write the failing streaming tests**
@@ -1100,7 +1226,7 @@ Add imports:
 ```ts
 import { AIMessageChunk } from "@langchain/core/messages";
 import { ChatGenerationChunk } from "@langchain/core/outputs";
-import { SideChannelFilter } from "interfaze";
+import { SideChannelFilter } from "./side_channels.js";
 ```
 
 Add the override to the class:
@@ -1393,7 +1519,7 @@ git commit -m "docs(js): README for @interfaze/langchain"
 - Modify: `.github/workflows/ci.yml`, `.github/workflows/publish.yml`
 
 **Interfaces:**
-- Produces: CI jobs that build/typecheck/test the JS package on Node 20/22/24, and publish jobs for npm + JSR. (These go green only after interfaze-js 1.0.3 is published — see Global Constraints release ordering.)
+- Produces: CI jobs that build/typecheck/test the JS package on Node 20/22/24, and publish jobs for npm + JSR. (No interfaze-js publish dependency — `interfaze@1.0.2` is already on the registry and the side-channel helpers are vendored.)
 
 - [ ] **Step 1: Add JS jobs to `ci.yml`**
 
@@ -1510,7 +1636,7 @@ git commit -m "ci: build, test, and publish the JS package"
 - withStructuredOutput/bindTools inherit → Task 9. ✓
 - standard-tests conformance → Task 10. ✓
 - js/README → Task 11. ✓
-- interfaze-js export edit + 1.0.3 → Task 2. ✓
+- vendored side-channel helpers (interfaze-js left untouched) → Task 2. ✓
 - CI/publish (npm + JSR) → Task 12. ✓
 - Out of scope (no tasks/guard) → honored (no task adds them). ✓
 
