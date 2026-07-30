@@ -3,6 +3,7 @@ import { INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError } from "interfaze";
 import { AIMessage, AIMessageChunk, type BaseMessage } from "@langchain/core/messages";
 import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
 import type { CallbackManagerForLLMRun } from "@langchain/core/callbacks/manager";
+import type { ChatModelStreamEvent } from "@langchain/core/language_models/event";
 import { SideChannelFilter, stripSideChannels } from "./side_channels.js";
 
 export interface ChatInterfazeFields extends ChatOpenAIFields {
@@ -161,5 +162,26 @@ export class ChatInterfaze extends ChatOpenAICompletions {
       finalMessage.additional_kwargs.precontext = precontext as never;
     }
     yield new ChatGenerationChunk({ message: finalMessage, text: tail });
+  }
+
+  // ChatOpenAICompletions ships a *native* `_streamChatModelEvents` fast path (its own
+  // completionWithRetry + convertOpenAICompletionsStream) that bypasses
+  // `_streamResponseChunks` entirely. `.streamEvents()` calls that skip `{ version: "v1" |
+  // "v2" }` (the newer content-block-centric protocol, and the internal fast path taken
+  // when a callback handler prefers chat-model-stream events) hit that native method
+  // directly, so `<think>`/`<precontext>` tags leak unfiltered. `.streamEvents({ version:
+  // "v2" })` is unaffected — that legacy protocol routes through the base Runnable bridge,
+  // which calls `_streamResponseChunks` (our filtered override) — but the default protocol
+  // is not. Restore `@langchain/core`'s generic `_streamChatModelEvents`, which synthesizes
+  // events from `this._streamResponseChunks(...)`, so both protocols end up filtered.
+  override async *_streamChatModelEvents(
+    messages: BaseMessage[],
+    options: this["ParsedCallOptions"],
+    runManager?: CallbackManagerForLLMRun
+  ): AsyncGenerator<ChatModelStreamEvent> {
+    const grandparent = Object.getPrototypeOf(Object.getPrototypeOf(ChatOpenAICompletions.prototype)) as {
+      _streamChatModelEvents: typeof ChatInterfaze.prototype._streamChatModelEvents;
+    };
+    yield* grandparent._streamChatModelEvents.call(this, messages, options, runManager);
   }
 }
