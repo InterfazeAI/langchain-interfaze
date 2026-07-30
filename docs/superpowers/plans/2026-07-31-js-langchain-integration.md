@@ -448,6 +448,35 @@ cd js && node --input-type=module -e "import * as m from '@langchain/openai'; if
 ```
 Expected: prints `ChatOpenAICompletions ok`. If it fails, inspect the printed `exports:` list — the class may be reachable via a subpath (e.g. `@langchain/openai/chat_models`); note the working import specifier and use it consistently in Task 4+.
 
+- [ ] **Step 5b: Smoke-test the two load-bearing assumptions before building on them**
+
+Every override in Tasks 4–8 rests on two facts from research that Task 3 is the first chance to confirm against the *installed* package: (a) `modelKwargs` lands as top-level request-body fields, and (b) `__includeRawResponse: true` stashes the raw response under `additional_kwargs.__raw_response`. Verify both directly on the base `ChatOpenAICompletions` (our subclass doesn't exist yet):
+
+```bash
+cd js && node --input-type=module -e '
+import { ChatOpenAICompletions } from "@langchain/openai";
+const calls = [];
+const fetchImpl = async (input, init = {}) => {
+  const raw = init.body ?? (input instanceof Request ? await input.clone().text() : undefined);
+  calls.push(raw ? JSON.parse(raw) : undefined);
+  return new Response(JSON.stringify({
+    id: "x", object: "chat.completion", created: 1, model: "interfaze-beta",
+    choices: [{ index: 0, message: { role: "assistant", content: "hi", refusal: null }, finish_reason: "stop", logprobs: null }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }, vcache: false, reasoning: "r"
+  }), { status: 200, headers: { "content-type": "application/json" } });
+};
+const m = new ChatOpenAICompletions({ apiKey: "t", model: "interfaze-beta", maxRetries: 0,
+  configuration: { baseURL: "https://api.interfaze.ai/v1", fetch: fetchImpl },
+  modelKwargs: { precontext: [{ name: "ocr" }] }, __includeRawResponse: true });
+const res = await m.invoke("hi");
+const bodyOk = JSON.stringify(calls.at(-1)?.precontext) === JSON.stringify([{ name: "ocr" }]);
+const rawOk = !!res.additional_kwargs?.__raw_response && res.additional_kwargs.__raw_response.reasoning === "r";
+console.log("modelKwargs->body:", bodyOk, "| __raw_response present:", rawOk);
+if (!bodyOk || !rawOk) { console.log("body keys:", Object.keys(calls.at(-1) ?? {})); console.log("additional_kwargs:", res.additional_kwargs); process.exit(1); }
+'
+```
+Expected: `modelKwargs->body: true | __raw_response present: true`. **If either is false, stop and reconcile before Task 4** — the printed `body keys` / `additional_kwargs` show where the data actually lives, and the constructor/`_generate` design must be adjusted to match (e.g. read the raw from a different key). Do not build Tasks 4–8 on an unconfirmed assumption.
+
 - [ ] **Step 6: Verify build + typecheck of the scaffold**
 
 Run: `cd js && npm run typecheck && npm run build`
@@ -465,7 +494,7 @@ git commit -m "chore: scaffold @interfaze/langchain package"
 ## Task 4: Constructor — key resolution, defaults, precontext
 
 **Files:**
-- Modify: `js/src/chat_models.ts`
+- Modify: `js/src/chat_models.ts`, `js/src/index.ts`
 - Create: `js/test/helpers.ts`, `js/test/constructor.test.ts`
 
 **Interfaces:**
@@ -660,6 +689,12 @@ export class ChatInterfaze extends ChatOpenAICompletions {
 ```
 
 > If Task 3 Step 5 found `ChatOpenAICompletions`/`ChatOpenAIFields` at a subpath, use that specifier here instead of `@langchain/openai`.
+
+Also update `js/src/index.ts` to export the options type (`helpers.ts` imports it):
+```ts
+export { ChatInterfaze } from "./chat_models.js";
+export type { ChatInterfazeFields } from "./chat_models.js";
+```
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -990,8 +1025,8 @@ git commit -m "feat(js): surface Interfaze side-fields and strip side-channel ta
 - Create: `js/test/stream.test.ts`
 
 **Interfaces:**
-- Consumes: `SideChannelFilter`, `stripSideChannels` from `interfaze`; `AIMessageChunk` from `@langchain/core/messages`; `ChatGenerationChunk` from `@langchain/core/outputs`.
-- Produces: overridden `_streamResponseChunks(messages, options, runManager?): AsyncGenerator<ChatGenerationChunk>` that rewrites video blocks, filters `<think>`/`<precontext>` from streamed text across chunk boundaries, and emits a trailing `ChatGenerationChunk` carrying the flushed tail + `reasoning`/`precontext`.
+- Consumes: `SideChannelFilter`, `stripSideChannels` from `interfaze`; `AIMessageChunk` from `@langchain/core/messages`; `ChatGenerationChunk` from `@langchain/core/outputs`; the module-level `applySideFields` helper defined in Task 6.
+- Produces: overridden `_streamResponseChunks(messages, options, runManager?): AsyncGenerator<ChatGenerationChunk>` that rewrites video blocks, attaches per-chunk top-level side-fields (Python parity with `_convert_chunk_to_generation_chunk`), strips `__raw_response` from every chunk, filters `<think>`/`<precontext>` from streamed text across chunk boundaries, and emits a trailing `ChatGenerationChunk` carrying the flushed tail + `reasoning`/`precontext`.
 
 - [ ] **Step 1: Write the failing streaming tests**
 
@@ -1048,6 +1083,8 @@ describe("streaming side-channel filter", () => {
     const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
     expect(text).toBe("Hello world");
     expect(got.some((c) => c.additional_kwargs.precontext || c.additional_kwargs.reasoning)).toBe(false);
+    // never leak the raw response on streamed chunks
+    expect(got.some((c) => "__raw_response" in c.additional_kwargs)).toBe(false);
   });
 });
 ```
@@ -1077,9 +1114,16 @@ Add the override to the class:
     const rawParts: string[] = [];
     for await (const gen of super._streamResponseChunks(this.rewriteVideoBlocks(messages), options, runManager)) {
       const message = gen.message;
-      if (message instanceof AIMessageChunk && typeof message.content === "string" && message.content) {
-        rawParts.push(message.content);
-        message.content = filter.feed(message.content);
+      if (message instanceof AIMessageChunk) {
+        // Python parity: read top-level side-fields off each chunk's raw, then
+        // strip __raw_response so it never leaks (see Task 6's no-leak rule).
+        const raw = message.additional_kwargs.__raw_response as Record<string, unknown> | undefined;
+        if (raw) applySideFields(message, raw);
+        delete message.additional_kwargs.__raw_response;
+        if (typeof message.content === "string" && message.content) {
+          rawParts.push(message.content);
+          message.content = filter.feed(message.content);
+        }
       }
       yield gen;
     }
@@ -1103,6 +1147,8 @@ Add the override to the class:
 
 Run: `cd js && npx vitest run test/stream.test.ts`
 Expected: all PASS. If `ChatGenerationChunk` requires additional fields (e.g. `generationInfo`) in this version, add them per the type error; the required behavior is the assertions above.
+
+> **Executor note (verify, don't assume):** we filter `message.content`, but `ChatGenerationChunk` also carries a `text` field. Confirm downstream consumers (output parsers, `.streamEvents()`) read `content`, not `text`. If any read `text`, set it from the filtered content too (`gen.text = message.content` when content is a string) so unfiltered text can't leak through that field.
 
 - [ ] **Step 5: Run the full suite**
 
@@ -1184,7 +1230,9 @@ Preferred implementation — override `_streamChatModelEvents` to fall back to c
   }
 ```
 
-If the grandparent lookup proves brittle (e.g. core doesn't expose `_streamChatModelEvents`, or the prototype chain differs), use the fallback: reimplement the event stream directly from our filtered chunks. Ask the failing test to confirm the event shape (`ev.event`, `ev.data.chunk`), then emit matching events from `this._streamResponseChunks(...)`. The required outcome is only the test's assertion: `.streamEvents()` content equals the filtered `.stream()` content.
+If the grandparent lookup resists on the **first** attempt (core doesn't expose `_streamChatModelEvents`, or the prototype chain differs), switch to the fallback immediately — do not spend turns tuning the prototype walk. Fallback: reimplement the event stream directly from our filtered chunks. Ask the failing test to confirm the event shape (`ev.event`, `ev.data.chunk`), then emit matching events from `this._streamResponseChunks(...)`. The required outcome is only the test's assertion: `.streamEvents()` content equals the filtered `.stream()` content.
+
+**A passing test with no override at all is a valid outcome.** If Step 2 shows the test already passes — because the installed version has no native bypass, or already routes `.streamEvents()` through `_streamResponseChunks` — do not add an override to force one into existence. Delete the empty test scaffold's TODO, keep the test as a regression guard, and move on. The test tells the truth about the installed version.
 
 - [ ] **Step 4: Run to verify pass**
 
@@ -1253,6 +1301,8 @@ describe("inherited capabilities", () => {
 
 Run: `cd js && npx vitest run test/structured_and_tools.test.ts`
 Expected: PASS. If `jsonMode` isn't the right method for a mocked endpoint, switch to `{ method: "functionCalling" }` and mock a tool-call response for the structured test; the point is that the inherited method runs through the subclass. If a `zod` version mismatch appears, align the `zod` devDependency with the `@langchain/openai` peer range.
+
+> **Executor note (accepted parity gap):** this test mocks clean JSON. Real Interfaze may return `json_object` content wrapped in a ```` ```json ```` fence; the SDK exports `stripJsonFence` for exactly that. We do **not** strip the fence here — this matches the Python package (which also doesn't), so it's deliberate parity, not an oversight. If a real fence issue surfaces later, that's a shared cross-language decision, not a JS-only bug.
 
 - [ ] **Step 3: Commit**
 
