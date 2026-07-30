@@ -10,9 +10,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: test (py${{ matrix.python-version }})
+  python-test:
+    name: python (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
     strategy:
       fail-fast: false
       matrix:
