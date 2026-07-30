@@ -26,7 +26,7 @@ describe("video content blocks", () => {
     const { model, calls } = mockChat(() => jsonResponse(completion()));
     await model.invoke([new HumanMessage({ content: [{ type: "video", base64: "AAAA", mime_type: "video/mp4" }] as never })]);
     const part = lastContent(calls)[0]!;
-    expect(part).toEqual({ type: "file", file: { file_data: "data:video/mp4;base64,AAAA" } });
+    expect(part).toEqual({ type: "file", file: { file_data: "data:video/mp4;base64,AAAA", format: "video/mp4" } });
   });
 
   it("rewrites a file_id video block", async () => {
