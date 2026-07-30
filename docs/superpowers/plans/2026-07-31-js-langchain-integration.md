@@ -39,7 +39,7 @@
 - `js/test/helpers.ts` — mock-`fetch` test harness.
 - `js/test/side_channels.test.ts` — unit tests for the vendored helpers.
 - `js/test/*.test.ts` — unit tests.
-- `js/test/standard.test.ts` — `@langchain/standard-tests` conformance.
+- `js/test/conformance.test.ts` — Runnable-surface conformance (invoke/batch/stream/pipe).
 
 ---
 
@@ -436,7 +436,6 @@ git commit -m "feat(js): vendor side-channel helpers from the interfaze SDK"
     "@arethetypeswrong/cli": "0.18.5",
     "@langchain/core": "^1.2.2",
     "@langchain/openai": "1.5.5",
-    "@langchain/standard-tests": "^1.0.0",
     "@types/node": "~22.20.1",
     "@vitest/coverage-v8": "^2.1.9",
     "interfaze": "^1.0.2",
@@ -1439,38 +1438,68 @@ git commit -m "test(js): structured output and tool calling smoke tests"
 
 ---
 
-## Task 10: Standard chat-model conformance suite
+## Task 10: Runnable-surface conformance suite
+
+> **Replan note (2026-07-31):** the original plan used `@langchain/standard-tests` (the JS analog of Python's `langchain-tests`). That package is **not published to npm** (verified `E404`; it's a monorepo-internal workspace package). There is no public external equivalent, so this task instead exercises the standard LangChain Runnable surface directly through the mock, proving `ChatInterfaze` behaves as a conforming chat model. This is the pragmatic parity substitute forced by ecosystem reality.
 
 **Files:**
-- Create: `js/test/standard.test.ts`
+- Create: `js/test/conformance.test.ts`
 
 **Interfaces:**
-- Consumes: `ChatModelUnitTests` from `@langchain/standard-tests`, `ChatInterfaze`. Mirrors the Python `tests/unit_tests/test_standard.py`.
+- Consumes: `ChatInterfaze` and the Task 4 `test/helpers.ts`. Drives the public Runnable API (`invoke`, `batch`, `stream`, `.pipe()` in an LCEL chain, and serialization guards) — the surface Python's `ChatModelUnitTests` covers.
 
-- [ ] **Step 1: Write the conformance harness**
+- [ ] **Step 1: Write the conformance tests**
 
-`js/test/standard.test.ts`:
+`js/test/conformance.test.ts`:
 ```ts
-import { describe } from "vitest";
-import { ChatModelUnitTests } from "@langchain/standard-tests";
+import { describe, expect, it } from "vitest";
+import { ChatPromptTemplate } from "@langchain/core/prompts";
+import { StringOutputParser } from "@langchain/core/output_parsers";
 import { ChatInterfaze } from "../src/index.js";
+import { completion, jsonResponse, mockChat, sseResponse, chunk } from "./helpers.js";
 
-const tester = new ChatModelUnitTests({
-  Cls: ChatInterfaze as never,
-  chatModelHasToolCalling: true,
-  chatModelHasStructuredOutput: true,
-  constructorArgs: { apiKey: "test", model: "interfaze-beta" },
-});
+describe("ChatInterfaze conforms to the standard chat-model surface", () => {
+  it("invoke returns an AIMessage with string content", async () => {
+    const { model } = mockChat(() => jsonResponse(completion("hello")));
+    const res = await model.invoke("hi");
+    expect(res.content).toBe("hello");
+    expect(res.getType()).toBe("ai");
+  });
 
-describe("ChatInterfaze standard unit tests", () => {
-  tester.runTests();
+  it("batch fans out over multiple inputs", async () => {
+    const { model } = mockChat(() => jsonResponse(completion("ok")));
+    const out = await model.batch(["a", "b", "c"]);
+    expect(out).toHaveLength(3);
+    expect(out.every((m) => m.content === "ok")).toBe(true);
+  });
+
+  it("stream yields message chunks", async () => {
+    const { model } = mockChat(() => sseResponse([chunk({ content: "Hel" }), chunk({ content: "lo" }), chunk({}, "stop")]));
+    let text = "";
+    for await (const c of await model.stream("hi")) text += typeof c.content === "string" ? c.content : "";
+    expect(text).toBe("Hello");
+  });
+
+  it("composes in an LCEL chain via .pipe()", async () => {
+    const { model } = mockChat(() => jsonResponse(completion("Bonjour")));
+    const chain = ChatPromptTemplate.fromTemplate("Translate to {lang}: {text}").pipe(model).pipe(new StringOutputParser());
+    const out = await chain.invoke({ lang: "French", text: "Hello" });
+    expect(out).toBe("Bonjour");
+  });
+
+  it("is not lc-serializable and exposes the standard identifiers", () => {
+    const model = new ChatInterfaze({ apiKey: "t" });
+    expect(model.is_lc_serializable()).toBe(false);
+    expect(model._llmType()).toBeTypeOf("string");
+    expect(model._modelType()).toBeTypeOf("string");
+  });
 });
 ```
 
 - [ ] **Step 2: Run the suite**
 
-Run: `cd js && npx vitest run test/standard.test.ts`
-Expected: PASS. `@langchain/standard-tests`' constructor/option names can differ slightly by version — if `runTests()` or the field names are off, `console.log(Object.getOwnPropertyNames(Object.getPrototypeOf(tester)))` and the package's `dist` types to find the correct API, then adjust. If a specific standard test is genuinely inapplicable to Interfaze, skip only that case with a one-line comment explaining why (mirror how the Python `ChatModelUnitTests` subclass is configured).
+Run: `cd js && npx vitest run test/conformance.test.ts`
+Expected: PASS. If `_llmType`/`_modelType`/`getType` have different names in the installed `@langchain/core`, adjust to the real method names (check `node_modules/@langchain/core/dist` types); the required outcome is that the public Runnable surface (invoke/batch/stream/pipe) works through the subclass.
 
 - [ ] **Step 3: Run the full suite + coverage**
 
@@ -1480,8 +1509,8 @@ Expected: all PASS; coverage meets thresholds (lines/statements/functions ≥ 90
 - [ ] **Step 4: Commit**
 
 ```bash
-git add js/test/standard.test.ts
-git commit -m "test(js): langchain standard unit-test conformance"
+git add js/test/conformance.test.ts
+git commit -m "test(js): Runnable-surface conformance suite"
 ```
 
 ---
@@ -1634,7 +1663,7 @@ git commit -m "ci: build, test, and publish the JS package"
 - Streaming filter + final chunk → Task 7. ✓
 - `.streamEvents()` bypass fix → Task 8. ✓
 - withStructuredOutput/bindTools inherit → Task 9. ✓
-- standard-tests conformance → Task 10. ✓
+- Runnable-surface conformance (standard-tests unavailable on npm) → Task 10. ✓
 - js/README → Task 11. ✓
 - vendored side-channel helpers (interfaze-js left untouched) → Task 2. ✓
 - CI/publish (npm + JSR) → Task 12. ✓
