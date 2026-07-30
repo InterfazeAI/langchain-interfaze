@@ -626,7 +626,7 @@ git commit -m "chore: scaffold @interfaze/langchain package"
 - Consumes: `INTERFAZE_BASE_URL`, `INTERFAZE_MODEL`, `InterfazeError` from `interfaze`; `ChatOpenAICompletions` from `@langchain/openai` (import specifier confirmed in Task 3 Step 5).
 - Produces:
   - `interface ChatInterfazeFields` — the constructor options: `ChatOpenAIFields` (from `@langchain/openai`) plus `apiKey?: string`, `precontext?: Array<Record<string, unknown>>`.
-  - `class ChatInterfaze extends ChatOpenAICompletions` with constructor `(fields?: ChatInterfazeFields)` and `is_lc_serializable(): boolean` returning `false`.
+  - `class ChatInterfaze extends ChatOpenAICompletions` with constructor `(fields?: ChatInterfazeFields)` that sets `this.lc_serializable = false` (overriding the base's `true`).
   - `js/test/helpers.ts` exporting `mockChat(responder, extraFields?)`, `completion(content?, extra?)`, `chunk(delta, finishReason?)`, `sseResponse(chunks)`, `jsonResponse(body)`, and constants `VIDEO_URL`, `CHAT_URL`.
 
 - [ ] **Step 1: Write the test helper**
@@ -750,9 +750,11 @@ describe("ChatInterfaze constructor", () => {
     expect(() => new ChatInterfaze()).not.toThrow();
   });
 
-  it("is not lc-serializable", () => {
-    expect(ChatInterfaze.prototype.constructor).toBeTypeOf("function");
-    expect(new ChatInterfaze({ apiKey: "t" }).is_lc_serializable()).toBe(false);
+  it("is not lc-serializable (closes the real langchain-core serialization gate)", () => {
+    const model = new ChatInterfaze({ apiKey: "t" });
+    // langchain-core gates serialization on the `lc_serializable` field, not a method.
+    // ChatOpenAI sets it true; ChatInterfaze must flip it false to match Python parity.
+    expect(model.lc_serializable).toBe(false);
   });
 
   it("injects the precontext field into the request body", async () => {
@@ -773,7 +775,7 @@ describe("ChatInterfaze constructor", () => {
 - [ ] **Step 3: Run the tests to verify they fail**
 
 Run: `cd js && npx vitest run test/constructor.test.ts`
-Expected: FAIL (placeholder `ChatInterfaze` has no constructor logic; `model.model` undefined, no `is_lc_serializable`, precontext not injected).
+Expected: FAIL (placeholder `ChatInterfaze` has no constructor logic; `model.model` undefined, `lc_serializable` not overridden, precontext not injected).
 
 - [ ] **Step 4: Implement the constructor**
 
@@ -805,13 +807,15 @@ export class ChatInterfaze extends ChatOpenAICompletions {
       configuration: { baseURL: INTERFAZE_BASE_URL, ...configuration },
       modelKwargs: precontext !== undefined ? { ...modelKwargs, precontext } : modelKwargs,
     });
-  }
-
-  is_lc_serializable(): boolean {
-    return false;
+    // langchain-core gates serialization on the `lc_serializable` field (BaseChatOpenAI
+    // sets it true). Flip it off so ChatInterfaze is not lc-serializable — Python parity
+    // with `is_lc_serializable() -> False`. Set after super() so it wins over the base.
+    this.lc_serializable = false;
   }
 }
 ```
+
+> `lc_serializable` is a plain boolean instance field on `BaseChatOpenAI` (not a getter). Assigning `this.lc_serializable = false` after `super()` is the robust override (a prototype getter would be shadowed by the base's own-property field, or throw on the base's assignment). Verify with the test that `new ChatInterfaze({ apiKey: "t" }).lc_serializable === false` AND construction does not throw.
 
 > If Task 3 Step 5 found `ChatOpenAICompletions`/`ChatOpenAIFields` at a subpath, use that specifier here instead of `@langchain/openai`.
 
@@ -1489,7 +1493,7 @@ describe("ChatInterfaze conforms to the standard chat-model surface", () => {
 
   it("is not lc-serializable and exposes the standard identifiers", () => {
     const model = new ChatInterfaze({ apiKey: "t" });
-    expect(model.is_lc_serializable()).toBe(false);
+    expect(model.lc_serializable).toBe(false);
     expect(model._llmType()).toBeTypeOf("string");
     expect(model._modelType()).toBeTypeOf("string");
   });
@@ -1657,7 +1661,7 @@ git commit -m "ci: build, test, and publish the JS package"
 **Spec coverage:**
 - Repo reorg (python/ + js/, root README, workflow repoint) → Task 1, Task 12. ✓
 - JS tooling mirrors interfaze-js (tsup dual, vitest, prettier 150, peer deps, pinned openai) → Task 3, Global Constraints. ✓
-- Constructor (key/env, defaults, precontext→modelKwargs, is_lc_serializable) → Task 4. ✓
+- Constructor (key/env, defaults, precontext→modelKwargs, lc_serializable=false) → Task 4. ✓
 - Video block rewrite (url/base64/file_id/filename/error) → Task 5. ✓
 - Side-fields + tag stripping + no `__raw_response` leak → Task 6. ✓
 - Streaming filter + final chunk → Task 7. ✓
