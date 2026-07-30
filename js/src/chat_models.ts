@@ -1,8 +1,9 @@
 import { ChatOpenAICompletions, type ChatOpenAIFields } from "@langchain/openai";
 import { INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError } from "interfaze";
-import type { BaseMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
 import type { CallbackManagerForLLMRun } from "@langchain/core/callbacks/manager";
+import { stripSideChannels } from "./side_channels.js";
 
 export interface ChatInterfazeFields extends ChatOpenAIFields {
   /** Interfaze API key; falls back to `process.env.INTERFAZE_API_KEY`. */
@@ -34,6 +35,33 @@ function convertVideoBlock(block: VideoBlock): Record<string, unknown> {
   return { type: "file", file };
 }
 
+const SIDE_FIELDS = ["precontext", "reasoning", "vcache"] as const;
+
+function applySideFields(message: AIMessage, raw: Record<string, unknown>): void {
+  for (const key of SIDE_FIELDS) {
+    const value = raw[key];
+    if (value !== undefined && value !== null) {
+      message.response_metadata[key] = value;
+      message.additional_kwargs[key] = value as never;
+    }
+  }
+}
+
+function stripTags(message: AIMessage): void {
+  if (typeof message.content !== "string") return;
+  if (!message.content.includes("<think>") && !message.content.includes("<precontext>")) return;
+  const { text, reasoning, precontext } = stripSideChannels(message.content);
+  if (text !== message.content) message.content = text;
+  if (reasoning && message.response_metadata.reasoning === undefined) {
+    message.response_metadata.reasoning = reasoning;
+    message.additional_kwargs.reasoning = reasoning as never;
+  }
+  if (precontext && message.response_metadata.precontext === undefined) {
+    message.response_metadata.precontext = precontext;
+    message.additional_kwargs.precontext = precontext as never;
+  }
+}
+
 function rewriteContent(content: unknown): unknown {
   if (!Array.isArray(content)) return content;
   let changed = false;
@@ -60,6 +88,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
       model: model ?? INTERFAZE_MODEL,
       configuration: { baseURL: INTERFAZE_BASE_URL, ...configuration },
       modelKwargs: precontext !== undefined ? { ...modelKwargs, precontext } : modelKwargs,
+      __includeRawResponse: true,
     });
     // BaseChatOpenAI sets lc_serializable = true; override for Python SDK parity
     // (this class is not intended to round-trip through LangChain's serialization).
@@ -79,6 +108,16 @@ export class ChatInterfaze extends ChatOpenAICompletions {
   }
 
   override async _generate(messages: BaseMessage[], options: this["ParsedCallOptions"], runManager?: CallbackManagerForLLMRun): Promise<ChatResult> {
-    return super._generate(this.rewriteVideoBlocks(messages), options, runManager);
+    const result = await super._generate(this.rewriteVideoBlocks(messages), options, runManager);
+    for (const generation of result.generations) {
+      const message = generation.message;
+      if (message instanceof AIMessage) {
+        const raw = message.additional_kwargs.__raw_response as Record<string, unknown> | undefined;
+        if (raw) applySideFields(message, raw);
+        delete message.additional_kwargs.__raw_response;
+        stripTags(message);
+      }
+    }
+    return result;
   }
 }
