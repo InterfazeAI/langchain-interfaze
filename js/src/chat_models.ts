@@ -1,9 +1,9 @@
 import { ChatOpenAICompletions, type ChatOpenAIFields } from "@langchain/openai";
 import { INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError } from "interfaze";
-import { AIMessage, type BaseMessage } from "@langchain/core/messages";
-import type { ChatResult } from "@langchain/core/outputs";
+import { AIMessage, AIMessageChunk, type BaseMessage } from "@langchain/core/messages";
+import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
 import type { CallbackManagerForLLMRun } from "@langchain/core/callbacks/manager";
-import { stripSideChannels } from "./side_channels.js";
+import { SideChannelFilter, stripSideChannels } from "./side_channels.js";
 
 export interface ChatInterfazeFields extends ChatOpenAIFields {
   /** Interfaze API key; falls back to `process.env.INTERFAZE_API_KEY`. */
@@ -119,5 +119,47 @@ export class ChatInterfaze extends ChatOpenAICompletions {
       }
     }
     return result;
+  }
+
+  override async *_streamResponseChunks(
+    messages: BaseMessage[],
+    options: this["ParsedCallOptions"],
+    runManager?: CallbackManagerForLLMRun
+  ): AsyncGenerator<ChatGenerationChunk> {
+    const filter = new SideChannelFilter();
+    const rawParts: string[] = [];
+    for await (const gen of super._streamResponseChunks(this.rewriteVideoBlocks(messages), options, runManager)) {
+      const message = gen.message;
+      if (message instanceof AIMessageChunk) {
+        // Python parity: read top-level side-fields off each chunk's raw, then
+        // strip __raw_response so it never leaks (see Task 6's no-leak rule).
+        const raw = message.additional_kwargs.__raw_response as Record<string, unknown> | undefined;
+        if (raw) applySideFields(message, raw);
+        delete message.additional_kwargs.__raw_response;
+        if (typeof message.content === "string" && message.content) {
+          rawParts.push(message.content);
+          message.content = filter.feed(message.content);
+          // `gen.text` mirrors `message.content` in the upstream OpenAI integration and is
+          // read independently by callback consumers (e.g. handleLLMNewToken's token arg,
+          // legacy streamEvents v1 on_llm_end). Keep it filtered too so raw tags can't leak
+          // through that side door.
+          gen.text = message.content;
+        }
+      }
+      yield gen;
+    }
+    const tail = filter.flush();
+    const { reasoning, precontext } = stripSideChannels(rawParts.join(""));
+    if (!tail && !reasoning && !precontext) return;
+    const finalMessage = new AIMessageChunk({ content: tail });
+    if (reasoning) {
+      finalMessage.response_metadata.reasoning = reasoning;
+      finalMessage.additional_kwargs.reasoning = reasoning;
+    }
+    if (precontext) {
+      finalMessage.response_metadata.precontext = precontext;
+      finalMessage.additional_kwargs.precontext = precontext as never;
+    }
+    yield new ChatGenerationChunk({ message: finalMessage, text: tail });
   }
 }
