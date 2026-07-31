@@ -13,7 +13,6 @@
   "keywords": [
     "interfaze",
     "langchain",
-    "openai",
     "ai",
     "llm"
   ],
@@ -36,7 +35,6 @@
   },
   "files": [
     "dist",
-    "README.md",
     "LICENSE"
   ],
   "sideEffects": false,

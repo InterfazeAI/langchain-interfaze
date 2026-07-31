@@ -156,10 +156,6 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     yield new ChatGenerationChunk({ message: finalMessage, text: tail });
   }
 
-  // The base class serves the default `.streamEvents()` protocol through a native path that
-  // bypasses `_streamResponseChunks` (our side-channel filter), leaking tags. Re-route through
-  // core's generic `_streamChatModelEvents`, which builds events from our filtered
-  // `_streamResponseChunks`. Not a no-op passthrough — do not remove.
   override async *_streamChatModelEvents(
     messages: BaseMessage[],
     options: this["ParsedCallOptions"],

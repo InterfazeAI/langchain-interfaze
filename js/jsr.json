@@ -1,8 +1,8 @@
 {
   "name": "@interfaze-ai/langchain",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "exports": "./src/index.ts",
   "publish": {
-    "include": ["src", "README.md", "LICENSE", "jsr.json"]
+    "include": ["src", "LICENSE", "jsr.json"]
   }
 }

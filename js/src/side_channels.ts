@@ -1,6 +1,3 @@
-// Vendored from the interfaze-js SDK (src/stream.ts) so the LangChain integration
-// stays self-contained. Keep in sync if the SDK's side-channel logic changes.
-
 export type Precontext = Record<string, unknown>;
 
 const TAG_RE = (tag: string) => new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g");

@@ -1,15 +1,451 @@
-# Interfaze LangChain SDKs
+# Interfaze LangChain SDK
 
-The official [LangChain](https://langchain.com) integrations for [Interfaze](https://interfaze.ai) — one class, `ChatInterfaze`, in both Python and TypeScript/JavaScript.
+The official [LangChain](https://www.langchain.com) integration for [Interfaze](https://interfaze.ai), for both **Python** (`langchain-interfaze`) and **TypeScript / JavaScript** (`@interfaze/langchain`).
 
-| Language | Package | Directory |
-| --- | --- | --- |
-| Python | [`langchain-interfaze`](https://pypi.org/project/langchain-interfaze/) (PyPI) | [`python/`](./python) |
-| TypeScript / JavaScript | [`@interfaze/langchain`](https://www.npmjs.com/package/@interfaze/langchain) (npm) | [`js/`](./js) |
+[Docs](https://interfaze.ai/docs) · [limits](https://interfaze.ai/docs/limits) · [pricing](https://interfaze.ai/pricing) · [dashboard](https://interfaze.ai) · [Python SDK](https://github.com/InterfazeAI/interfaze-python) · [TypeScript / JavaScript SDK](https://github.com/InterfazeAI/interfaze-js)
 
-See [`python/README.md`](./python/README.md) and [`js/README.md`](./js/README.md) for install and usage.
+`ChatInterfaze` is a standard LangChain chat model with the same behavior in both languages. Every section below shows Python and TypeScript side by side. Source lives in [`python/`](./python) and [`js/`](./js).
 
-Built on the core [Interfaze Python SDK](https://github.com/InterfazeAI/interfaze-python) and [Interfaze JS SDK](https://github.com/InterfazeAI/interfaze-js).
+## Install
+
+Python:
+
+```bash
+pip install langchain-interfaze
+```
+
+TypeScript / JavaScript:
+
+```bash
+npm install @interfaze/langchain
+```
+
+The TS structured-output and tool examples use `zod` for schemas (`npm install zod`); it's an optional peer.
+
+## Setup
+
+Python:
+
+```python
+from langchain_interfaze import ChatInterfaze
+
+llm = ChatInterfaze(api_key="sk_...")  # or set INTERFAZE_API_KEY and call ChatInterfaze()
+```
+
+TypeScript:
+
+```ts
+import { ChatInterfaze } from "@interfaze/langchain";
+
+const llm = new ChatInterfaze({ apiKey: "sk_..." }); // or set INTERFAZE_API_KEY and call new ChatInterfaze()
+```
+
+`ChatInterfaze` is a standard LangChain chat model, so the usual options (`temperature`, `max_tokens` / `maxTokens`, `timeout`, `reasoning_effort` / `reasoningEffort`, …) are forwarded; the base URL (`base_url` / `configuration.baseURL`) and `model` default to the Interfaze endpoint and `interfaze-beta`.
+
+## Your first request
+
+Extract structured data from an ID. Interfaze runs OCR for you, structured output returns your schema, and the raw OCR lands on `response_metadata.precontext` — keep both with `include_raw` / `includeRaw`:
+
+Python:
+
+```python
+from langchain_core.messages import HumanMessage
+from pydantic import BaseModel, Field
+
+
+class IdCard(BaseModel):
+    first_name: str
+    last_name: str
+    dob: str = Field(description="Date of birth on the ID")
+    licence_number: str
+
+
+out = llm.with_structured_output(IdCard, include_raw=True).invoke(
+    [
+        HumanMessage(
+            content=[
+                {"type": "text", "text": "Extract the details from this ID."},
+                {"type": "image_url", "image_url": {"url": "https://r2public.jigsawstack.com/interfaze/examples/id.jpg"}},
+            ]
+        )
+    ]
+)
+
+print(out["parsed"])  # IdCard(first_name="IVÁN ICHET", …)
+print(out["raw"].response_metadata.get("precontext"))  # the raw OCR that produced it
+```
+
+TypeScript:
+
+```ts
+import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import { z } from "zod";
+
+const IdCard = z.object({
+  first_name: z.string(),
+  last_name: z.string(),
+  dob: z.string().describe("Date of birth on the ID"),
+  licence_number: z.string(),
+});
+
+const out = await llm.withStructuredOutput(IdCard, { includeRaw: true }).invoke([
+  new HumanMessage({
+    content: [
+      { type: "text", text: "Extract the details from this ID." },
+      { type: "image_url", image_url: { url: "https://r2public.jigsawstack.com/interfaze/examples/id.jpg" } },
+    ],
+  }),
+]);
+
+console.log(out.parsed); // { first_name: "IVÁN ICHET", … }
+console.log((out.raw as AIMessage).response_metadata.precontext); // the raw OCR that produced it
+```
+
+## Precontext
+
+Interfaze returns fields a plain chat model would drop. `ChatInterfaze` surfaces them on both `response_metadata` and `additional_kwargs`:
+
+Python:
+
+```python
+res = llm.invoke("Which US public companies reported earnings today?")
+
+res.response_metadata.get("precontext")  # raw output of any tool Interfaze ran (OCR / web / scrape / …)
+res.response_metadata.get("reasoning")   # reasoning text (with reasoning_effort and no schema)
+res.response_metadata.get("vcache")      # whether the semantic cache was hit
+```
+
+TypeScript:
+
+```ts
+const res = await llm.invoke("Which US public companies reported earnings today?");
+
+res.response_metadata.precontext; // raw output of any tool Interfaze ran (OCR / web / scrape / …)
+res.response_metadata.reasoning; // reasoning text (with reasoningEffort and no schema)
+res.response_metadata.vcache; // whether the semantic cache was hit
+```
+
+## Chat
+
+Pass a plain string for a one-off, or a message list for multi-turn.
+
+Python:
+
+```python
+from langchain_core.messages import HumanMessage, SystemMessage
+
+res = llm.invoke(
+    [
+        SystemMessage("You are concise."),
+        HumanMessage("Which US public companies reported earnings today?"),
+    ]
+)
+
+res.content  # a web search backs the answer here
+```
+
+TypeScript:
+
+```ts
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+
+const res = await llm.invoke([new SystemMessage("You are concise."), new HumanMessage("Which US public companies reported earnings today?")]);
+
+res.content; // a web search backs the answer here
+```
+
+### Streaming
+
+Stream the reply as it's generated; the inline `<think>`/`<precontext>` side-channels are stripped from the streamed content:
+
+Python:
+
+```python
+for chunk in llm.stream("Summarize this week's top AI research and cite your sources."):
+    print(chunk.content, end="", flush=True)
+```
+
+TypeScript:
+
+```ts
+for await (const chunk of await llm.stream("Summarize this week's top AI research and cite your sources.")) {
+  process.stdout.write(typeof chunk.content === "string" ? chunk.content : "");
+}
+```
+
+### Structured output
+
+Takes a Pydantic model / zod schema (or JSON schema) and returns instances. Pass `include_raw` / `includeRaw` to also get the underlying `AIMessage` (and its `precontext`).
+
+Python:
+
+```python
+from pydantic import BaseModel
+
+
+class Receipt(BaseModel):
+    merchant: str
+    total: float
+
+
+structured = llm.with_structured_output(Receipt)
+structured.invoke(
+    [
+        HumanMessage(
+            content=[
+                {"type": "text", "text": "Extract this receipt."},
+                {"type": "image_url", "image_url": {"url": "https://jigsawstack.com/preview/vocr-example.jpg"}},
+            ]
+        )
+    ]
+)  # -> Receipt(merchant="Walmart", total=144.02)
+```
+
+TypeScript:
+
+```ts
+import { z } from "zod";
+
+const Receipt = z.object({
+  merchant: z.string(),
+  total: z.number(),
+});
+
+const structured = llm.withStructuredOutput(Receipt);
+await structured.invoke([
+  new HumanMessage({
+    content: [
+      { type: "text", text: "Extract this receipt." },
+      { type: "image_url", image_url: { url: "https://jigsawstack.com/preview/vocr-example.jpg" } },
+    ],
+  }),
+]); // -> { merchant: "Walmart", total: 144.02 }
+```
+
+### Tools and function calling
+
+Bind tools with `bind_tools` / `bindTools`, then read `tool_calls` off the response:
+
+Python:
+
+```python
+from langchain_core.tools import tool
+
+
+@tool
+def get_weather(city: str) -> str:
+    """Get the current weather for a city."""
+    ...
+
+
+res = llm.bind_tools([get_weather]).invoke("What's the weather in Tokyo?")
+res.tool_calls  # [{"name": "get_weather", "args": {"city": "Tokyo"}, "id": ...}]
+```
+
+TypeScript:
+
+```ts
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
+
+const getWeather = tool(
+  async ({ city }) => {
+    return `Sunny in ${city}`;
+  },
+  {
+    name: "get_weather",
+    description: "Get the current weather for a city.",
+    schema: z.object({ city: z.string() }),
+  }
+);
+
+const res = await llm.bindTools([getWeather]).invoke("What's the weather in Tokyo?");
+res.tool_calls; // [{ name: "get_weather", args: { city: "Tokyo" }, id: ... }]
+```
+
+## Reasoning
+
+The reasoning text comes back on `response_metadata.reasoning`.
+
+Python — set `reasoning_effort`:
+
+```python
+llm = ChatInterfaze(reasoning_effort="high")  # also "on" / "off" / "auto"; or llm.bind(reasoning_effort="high")
+
+res = llm.invoke("Which region should we launch in first, and why?")
+res.response_metadata.get("reasoning")
+```
+
+TypeScript — pass `reasoningEffort` as a call option (`"low"` / `"medium"` / `"high"`, …), or `.withConfig({ reasoningEffort: "high" })` to apply it to every call:
+
+```ts
+const res = await llm.invoke("Which region should we launch in first, and why?", { reasoningEffort: "high" });
+res.response_metadata.reasoning;
+```
+
+## Multimodal Inputs
+
+Images, audio, PDFs, and CSV use standard LangChain content parts, by URL or base64:
+
+Python:
+
+```python
+from langchain_core.messages import HumanMessage
+
+llm.invoke(
+    [
+        HumanMessage(
+            content=[
+                {"type": "text", "text": "Summarize this document."},
+                {"type": "file", "file": {"filename": "paper.pdf", "file_data": "https://arxiv.org/pdf/1706.03762"}},
+            ]
+        )
+    ]
+)
+```
+
+TypeScript:
+
+```ts
+await llm.invoke([
+  new HumanMessage({
+    content: [
+      { type: "text", text: "Summarize this document." },
+      { type: "file", file: { filename: "paper.pdf", file_data: "https://arxiv.org/pdf/1706.03762" } },
+    ],
+  }),
+]);
+```
+
+Video rides on an Interfaze `file` part via a `{"type": "video", ...}` block:
+
+Python:
+
+```python
+llm.invoke(
+    [
+        HumanMessage(
+            content=[
+                {"type": "text", "text": "What happens in this clip?"},
+                {"type": "video", "url": "https://…/clip.mp4"},
+            ]
+        )
+    ]
+)
+```
+
+TypeScript:
+
+```ts
+await llm.invoke([
+  new HumanMessage({
+    content: [
+      { type: "text", text: "What happens in this clip?" },
+      { type: "video", url: "https://…/clip.mp4" },
+    ] as never,
+  }),
+]);
+```
+
+> A video block accepts `url`, `base64` (with an optional `mime_type`), or `file_id`, plus an optional `extras` `{"filename": …}`.
+
+## Async and batch
+
+Python — every call has an async twin, and `batch` fans out concurrently:
+
+```python
+await llm.ainvoke("Hello")
+
+async for chunk in llm.astream("Hello"):
+    print(chunk.content, end="")
+
+llm.batch(["Summarize A", "Summarize B", "Summarize C"])
+```
+
+TypeScript — `invoke`, `stream`, and `batch` are all async already (no separate sync API); `batch` fans out concurrently:
+
+```ts
+await llm.invoke("Hello");
+
+for await (const chunk of await llm.stream("Hello")) {
+  process.stdout.write(typeof chunk.content === "string" ? chunk.content : "");
+}
+
+await llm.batch(["Summarize A", "Summarize B", "Summarize C"]);
+```
+
+## Chains (LCEL)
+
+Chain `ChatInterfaze` like any other LangChain runnable.
+
+Python (`|`):
+
+```python
+from langchain_core.prompts import ChatPromptTemplate
+
+chain = ChatPromptTemplate.from_template("Translate to {lang}: {text}") | llm
+chain.invoke({"lang": "French", "text": "Hello"})
+```
+
+TypeScript (`.pipe()`):
+
+```ts
+import { ChatPromptTemplate } from "@langchain/core/prompts";
+
+const chain = ChatPromptTemplate.fromTemplate("Translate to {lang}: {text}").pipe(llm);
+await chain.invoke({ lang: "French", text: "Hello" });
+```
+
+## Feeding precontext
+
+Pass precomputed tool output to skip Interfaze's internal tool run:
+
+Python:
+
+```python
+llm = ChatInterfaze(precontext=[{"name": "ocr", "result": {"extracted_text": "..."}}])
+```
+
+TypeScript:
+
+```ts
+const llm = new ChatInterfaze({ precontext: [{ name: "ocr", result: { extracted_text: "..." } }] });
+```
+
+## Tasks and guardrails
+
+`ChatInterfaze` is a chat model. For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tasks)) and `guard` safety codes, use the core `interfaze` client directly ([Python](https://github.com/InterfazeAI/interfaze-python) · [TypeScript / JavaScript](https://github.com/InterfazeAI/interfaze-js)).
+
+## Errors
+
+Python:
+
+```python
+from interfaze import BadRequestError, InterfazeError, RateLimitError
+```
+
+TypeScript:
+
+```ts
+import { BadRequestError, InterfazeError, RateLimitError } from "interfaze";
+```
+
+`ChatInterfaze` raises `InterfazeError` for client-side problems (a missing API key). Everything else is an `APIError` subclass carrying a status code (`status_code` in Python, `status` in TS) and `code` — `BadRequestError` (400), `AuthenticationError` (401), `RateLimitError` (429), and so on.
+
+## Capabilities
+
+| Use case                                    | Python                            | TypeScript / JavaScript             |
+| ------------------------------------------- | --------------------------------- | ----------------------------------- |
+| [Chat](#chat)                               | `invoke` / `stream`               | `invoke` / `stream`                 |
+| [Structured output](#structured-output)     | `with_structured_output(Model)`   | `withStructuredOutput(schema)`      |
+| [Tools](#tools-and-function-calling)        | `bind_tools([...])`               | `bindTools([...])`                  |
+| [Reasoning](#reasoning)                     | `reasoning_effort`                | `reasoningEffort` call option       |
+| [Multimodal inputs](#multimodal-inputs)     | content parts + `{"type":"video"}`| content parts + `{ type: "video" }` |
+| [Precontext](#precontext)                   | `response_metadata["precontext"]` | `response_metadata.precontext`      |
+| [Async and batch](#async-and-batch)         | `ainvoke` / `astream` / `batch`   | `invoke` / `stream` / `batch`       |
+| [Chains](#chains-lcel)                      | LCEL (`\|`)                       | LCEL (`.pipe()`)                    |
+| [Feed precontext](#feeding-precontext)      | `ChatInterfaze(precontext=[...])` | `new ChatInterfaze({ precontext })` |
+| [Tasks / guardrails](#tasks-and-guardrails) | core `interfaze` client           | core `interfaze` client             |
 
 ## License
 
