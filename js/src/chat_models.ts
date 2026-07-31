@@ -91,7 +91,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
       modelKwargs: precontext !== undefined ? { ...modelKwargs, precontext } : modelKwargs,
       __includeRawResponse: true,
     });
-    // BaseChatOpenAI sets lc_serializable = true; override for Python SDK parity
+    // The base class sets lc_serializable = true; override for Python SDK parity
     // (this class is not intended to round-trip through LangChain's serialization).
     this.lc_serializable = false;
   }
@@ -140,8 +140,8 @@ export class ChatInterfaze extends ChatOpenAICompletions {
         if (typeof message.content === "string" && message.content) {
           rawParts.push(message.content);
           message.content = filter.feed(message.content);
-          // `gen.text` mirrors `message.content` in the upstream OpenAI integration and is
-          // read independently by callback consumers (e.g. handleLLMNewToken's token arg,
+          // `gen.text` mirrors `message.content` in the base integration and is read
+          // independently by callback consumers (e.g. handleLLMNewToken's token arg,
           // legacy streamEvents v1 on_llm_end). Keep it filtered too so raw tags can't leak
           // through that side door.
           gen.text = message.content;
@@ -164,8 +164,8 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     yield new ChatGenerationChunk({ message: finalMessage, text: tail });
   }
 
-  // ChatOpenAICompletions ships a *native* `_streamChatModelEvents` fast path (its own
-  // completionWithRetry + convertOpenAICompletionsStream) that bypasses
+  // The base completions class ships a *native* `_streamChatModelEvents` fast path (its own
+  // request + stream-conversion) that bypasses
   // `_streamResponseChunks` entirely. `.streamEvents()` calls that skip `{ version: "v1" |
   // "v2" }` (the newer content-block-centric protocol, and the internal fast path taken
   // when a callback handler prefers chat-model-stream events) hit that native method

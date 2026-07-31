@@ -8,7 +8,7 @@ export interface CapturedRequest {
   body: Record<string, unknown> | undefined;
 }
 
-/** Build a ChatInterfaze whose OpenAI client uses a capturing mock `fetch`. */
+/** Build a ChatInterfaze whose underlying client uses a capturing mock `fetch`. */
 export function mockChat(
   responder: (req: CapturedRequest) => Response,
   extraFields: Partial<ChatInterfazeFields> = {}
@@ -65,8 +65,8 @@ export function chunk(delta: Record<string, unknown>, finishReason: string | nul
     object: "chat.completion.chunk",
     created: 1_700_000_000,
     model: "interfaze-beta",
-    // Real OpenAI-compatible streams set `role: "assistant"` on the first delta and the
-    // OpenAI converter carries it forward via `defaultRole`. Set it on every synthetic
+    // Real streaming APIs set `role: "assistant"` on the first delta and the converter
+    // carries it forward via `defaultRole`. Set it on every synthetic
     // chunk here (harmless and simpler than tracking "first call") so deltas convert to
     // AIMessageChunk instead of falling through to a roleless ChatMessageChunk.
     choices: [{ index: 0, delta: { role: "assistant", ...delta }, finish_reason: finishReason }],
