@@ -49,7 +49,6 @@ describe("streaming side-channel filter", () => {
     const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
     expect(text).toBe("Hello world");
     expect(got.some((c) => c.additional_kwargs.precontext || c.additional_kwargs.reasoning)).toBe(false);
-    // never leak the raw response on streamed chunks
     expect(got.some((c) => "__raw_response" in c.additional_kwargs)).toBe(false);
   });
 });

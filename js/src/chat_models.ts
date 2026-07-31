@@ -18,7 +18,6 @@ type VideoBlock = { type: "video"; url?: string; base64?: string; file_id?: stri
 function convertVideoBlock(block: VideoBlock): Record<string, unknown> {
   let mime = block.mime_type;
   let file: Record<string, unknown>;
-  // Key-existence checks (not truthiness) to match Python's `"url" in block`.
   if ("url" in block) {
     file = { file_data: block.url };
   } else if ("base64" in block) {
@@ -29,7 +28,6 @@ function convertVideoBlock(block: VideoBlock): Record<string, unknown> {
   } else {
     throw new InterfazeError("Video content block requires one of 'url', 'base64', or 'file_id'.");
   }
-  // Python stamps `format` whenever mime is truthy (always, for base64). Match it.
   if (mime) file.format = mime;
   const filename = block.extras?.filename;
   if (filename) file.filename = filename;
@@ -91,8 +89,6 @@ export class ChatInterfaze extends ChatOpenAICompletions {
       modelKwargs: precontext !== undefined ? { ...modelKwargs, precontext } : modelKwargs,
       __includeRawResponse: true,
     });
-    // The base class sets lc_serializable = true; override for Python SDK parity
-    // (this class is not intended to round-trip through LangChain's serialization).
     this.lc_serializable = false;
   }
 
@@ -132,18 +128,14 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     for await (const gen of super._streamResponseChunks(this.rewriteVideoBlocks(messages), options, runManager)) {
       const message = gen.message;
       if (message instanceof AIMessageChunk) {
-        // Python parity: read top-level side-fields off each chunk's raw, then
-        // strip __raw_response so it never leaks (see Task 6's no-leak rule).
         const raw = message.additional_kwargs.__raw_response as Record<string, unknown> | undefined;
         if (raw) applySideFields(message, raw);
         delete message.additional_kwargs.__raw_response;
         if (typeof message.content === "string" && message.content) {
           rawParts.push(message.content);
           message.content = filter.feed(message.content);
-          // `gen.text` mirrors `message.content` in the base integration and is read
-          // independently by callback consumers (e.g. handleLLMNewToken's token arg,
-          // legacy streamEvents v1 on_llm_end). Keep it filtered too so raw tags can't leak
-          // through that side door.
+          // Callbacks (handleLLMNewToken, streamEvents v1) read gen.text independently of
+          // message.content, so keep it filtered too.
           gen.text = message.content;
         }
       }
@@ -164,16 +156,10 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     yield new ChatGenerationChunk({ message: finalMessage, text: tail });
   }
 
-  // The base completions class ships a *native* `_streamChatModelEvents` fast path (its own
-  // request + stream-conversion) that bypasses
-  // `_streamResponseChunks` entirely. `.streamEvents()` calls that skip `{ version: "v1" |
-  // "v2" }` (the newer content-block-centric protocol, and the internal fast path taken
-  // when a callback handler prefers chat-model-stream events) hit that native method
-  // directly, so `<think>`/`<precontext>` tags leak unfiltered. `.streamEvents({ version:
-  // "v2" })` is unaffected — that legacy protocol routes through the base Runnable bridge,
-  // which calls `_streamResponseChunks` (our filtered override) — but the default protocol
-  // is not. Restore `@langchain/core`'s generic `_streamChatModelEvents`, which synthesizes
-  // events from `this._streamResponseChunks(...)`, so both protocols end up filtered.
+  // The base class serves the default `.streamEvents()` protocol through a native path that
+  // bypasses `_streamResponseChunks` (our side-channel filter), leaking tags. Re-route through
+  // core's generic `_streamChatModelEvents`, which builds events from our filtered
+  // `_streamResponseChunks`. Not a no-op passthrough — do not remove.
   override async *_streamChatModelEvents(
     messages: BaseMessage[],
     options: this["ParsedCallOptions"],

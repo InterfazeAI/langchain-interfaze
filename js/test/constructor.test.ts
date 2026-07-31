@@ -12,7 +12,6 @@ describe("ChatInterfaze constructor", () => {
   it("defaults baseURL and model to Interfaze", () => {
     const model = new ChatInterfaze({ apiKey: "t" });
     expect(model.model).toBe(INTERFAZE_MODEL);
-    // clientConfig carries the resolved baseURL
     expect((model as unknown as { clientConfig: { baseURL?: string } }).clientConfig.baseURL).toBe(INTERFAZE_BASE_URL);
   });
 

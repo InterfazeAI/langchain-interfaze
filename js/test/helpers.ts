@@ -65,10 +65,7 @@ export function chunk(delta: Record<string, unknown>, finishReason: string | nul
     object: "chat.completion.chunk",
     created: 1_700_000_000,
     model: "interfaze-beta",
-    // Real streaming APIs set `role: "assistant"` on the first delta and the converter
-    // carries it forward via `defaultRole`. Set it on every synthetic
-    // chunk here (harmless and simpler than tracking "first call") so deltas convert to
-    // AIMessageChunk instead of falling through to a roleless ChatMessageChunk.
+    // role on every synthetic chunk so deltas convert to AIMessageChunk, not ChatMessageChunk.
     choices: [{ index: 0, delta: { role: "assistant", ...delta }, finish_reason: finishReason }],
   };
 }
