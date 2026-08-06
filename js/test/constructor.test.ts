@@ -37,16 +37,72 @@ describe("ChatInterfaze constructor", () => {
     expect(model.lc_serializable).toBe(false);
   });
 
-  it("injects the precontext field into the request body", async () => {
-    const pc = [{ name: "ocr", result: { extracted_text: "y" } }];
-    const { model, calls } = mockChat(() => jsonResponse(completion("Hi!")), { precontext: pc });
-    await model.invoke("hi");
-    expect(lastBody(calls).precontext).toEqual(pc);
+  it("defaults to a long timeout but respects an override", () => {
+    expect((new ChatInterfaze({ apiKey: "t" }) as unknown as { timeout?: number }).timeout).toBe(900_000);
+    expect((new ChatInterfaze({ apiKey: "t", timeout: 30_000 }) as unknown as { timeout?: number }).timeout).toBe(30_000);
   });
 
-  it("omits precontext when not set", async () => {
+  it("maps the interfaze control options onto request headers", () => {
+    const model = new ChatInterfaze({
+      apiKey: "t",
+      showAdditionalInfo: true,
+      bypassMoA: true,
+      bypassCache: true,
+      adminKey: "adm",
+      configuration: { defaultHeaders: { "x-custom": "1" } },
+    });
+    const headers = (model as unknown as { clientConfig: { defaultHeaders?: Record<string, string> } }).clientConfig.defaultHeaders;
+    expect(headers).toEqual({
+      "x-custom": "1",
+      "x-show-additional-info": "true",
+      "x-interfaze-bypass-moa": "true",
+      "x-interfaze-bypass-cache": "true",
+      "x-admin-key": "adm",
+    });
+  });
+
+  it("sends no control headers by default", () => {
+    const model = new ChatInterfaze({ apiKey: "t" });
+    expect((model as unknown as { clientConfig: { defaultHeaders?: unknown } }).clientConfig.defaultHeaders).toBeUndefined();
+  });
+
+  // @langchain/openai only forwards reasoningEffort for model names its own heuristic
+  // recognizes (/^o\d/, gpt-5*), so without our override interfaze-beta loses it entirely.
+  it.each([
+    ["call option", async (m: ChatInterfaze) => m.invoke("hi", { reasoningEffort: "high" })],
+    ["withConfig", async (m: ChatInterfaze) => m.withConfig({ reasoningEffort: "high" } as never).invoke("hi")],
+  ])("forwards reasoning_effort via %s", async (_label, run) => {
+    const { model, calls } = mockChat(() => jsonResponse(completion("Hi!")));
+    await run(model);
+    expect(lastBody(calls).reasoning_effort).toBe("high");
+  });
+
+  it("forwards a constructor reasoningEffort, including interfaze-only values", async () => {
+    const { model, calls } = mockChat(() => jsonResponse(completion("Hi!")), { reasoningEffort: "on" });
+    await model.invoke("hi");
+    expect(lastBody(calls).reasoning_effort).toBe("on");
+  });
+
+  it("omits reasoning_effort when unset", async () => {
     const { model, calls } = mockChat(() => jsonResponse(completion("Hi!")));
     await model.invoke("hi");
-    expect("precontext" in lastBody(calls)).toBe(false);
+    expect("reasoning_effort" in lastBody(calls)).toBe(false);
+  });
+
+  it("actually puts the control headers on the wire", async () => {
+    let seen: Headers | undefined;
+    const model = new ChatInterfaze({
+      apiKey: "t",
+      bypassCache: true,
+      maxRetries: 0,
+      configuration: {
+        fetch: (async (input: unknown, init: RequestInit = {}) => {
+          seen = new Headers((init.headers ?? (input as Request).headers) as HeadersInit);
+          return jsonResponse(completion("Hi!"));
+        }) as unknown as never,
+      },
+    });
+    await model.invoke("hi");
+    expect(seen?.get("x-interfaze-bypass-cache")).toBe("true");
   });
 });

@@ -8,6 +8,7 @@ import httpx
 import pytest
 import respx
 from interfaze import INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError
+from langchain_core.callbacks import BaseCallbackHandler, CallbackManager
 from langchain_core.messages import HumanMessage
 
 from langchain_interfaze import ChatInterfaze
@@ -141,23 +142,63 @@ def test_response_without_precontext_or_reasoning_unaffected() -> None:
     assert result.content == "Hi!"
 
 
-# request-side precontext
-@respx.mock
-def test_request_precontext_injected() -> None:
-    route = mock_json(BASIC)
-    model = ChatInterfaze(api_key="t", precontext=[{"name": "ocr", "result": {"extracted_text": "y"}}])
-    model.invoke([HumanMessage("hi")])
-    body = last_body(route)
-    assert body["precontext"] == [{"name": "ocr", "result": {"extracted_text": "y"}}]
-
-
-@respx.mock
-def test_request_without_precontext_field_omits_it() -> None:
-    route = mock_json(BASIC)
+# provider identity
+def test_provider_identity() -> None:
     model = ChatInterfaze(api_key="t")
-    model.invoke([HumanMessage("hi")])
-    body = last_body(route)
-    assert "precontext" not in body
+    assert model._llm_type == "interfaze-chat"
+    assert model._get_ls_params()["ls_provider"] == "interfaze"
+    assert model.lc_secrets == {"openai_api_key": "INTERFAZE_API_KEY"}
+    assert model.get_lc_namespace() == ["langchain_interfaze", "chat_models"]
+    assert model.metadata is not None
+    assert "langchain-interfaze" in model.metadata["lc_versions"]
+
+
+@respx.mock
+def test_model_provider_stamped_on_response() -> None:
+    mock_json(BASIC)
+    model = ChatInterfaze(api_key="t")
+    assert model.invoke([HumanMessage("hi")]).response_metadata["model_provider"] == "interfaze"
+
+
+def test_defaults_to_long_timeout_but_respects_override() -> None:
+    assert ChatInterfaze(api_key="t").request_timeout == 900.0
+    assert ChatInterfaze(api_key="t", timeout=30).request_timeout == 30
+
+
+def test_never_routes_to_the_responses_api() -> None:
+    # `reasoning=` would otherwise flip ChatOpenAI over to /v1/responses.
+    assert ChatInterfaze(api_key="t", reasoning={"summary": "auto"}).use_responses_api is False
+
+
+# control-plane headers
+def test_control_headers() -> None:
+    model = ChatInterfaze(
+        api_key="t",
+        show_additional_info=True,
+        bypass_moa=True,
+        bypass_cache=True,
+        admin_key="adm",
+        default_headers={"x-custom": "1"},
+    )
+    assert model.default_headers == {
+        "x-custom": "1",
+        "x-show-additional-info": "true",
+        "x-interfaze-bypass-moa": "true",
+        "x-interfaze-bypass-cache": "true",
+        "x-admin-key": "adm",
+    }
+
+
+def test_no_control_headers_by_default() -> None:
+    assert ChatInterfaze(api_key="t").default_headers is None
+
+
+@respx.mock
+def test_streaming_asks_for_usage() -> None:
+    # langchain-openai only auto-enables this for OpenAI's own base URL.
+    route = mock_sse([_chunk({"content": "hi"}), _chunk({}, finish_reason="stop")])
+    list(ChatInterfaze(api_key="t").stream([HumanMessage("hi")]))
+    assert last_body(route)["stream_options"] == {"include_usage": True}
 
 
 # video content blocks
@@ -174,7 +215,21 @@ def test_video_block_converted_to_file_part() -> None:
     model.invoke([message])  # must not raise
     body = last_body(route)
     content = body["messages"][-1]["content"]
-    assert {"type": "file", "file": {"file_data": VIDEO_URL}} in content
+    assert {"type": "file", "file": {"file_data": VIDEO_URL, "format": "video/mp4"}} in content
+
+
+@respx.mock
+def test_video_block_url_without_known_extension_omits_format() -> None:
+    route = mock_json(BASIC)
+    model = ChatInterfaze(api_key="t")
+    model.invoke([HumanMessage(content=[{"type": "video", "url": "https://example.com/clip"}])])
+    assert last_body(route)["messages"][-1]["content"][0]["file"] == {"file_data": "https://example.com/clip"}
+
+
+def test_video_block_file_id_raises() -> None:
+    model = ChatInterfaze(api_key="t")
+    with pytest.raises(InterfazeError, match="file_id"):
+        model.invoke([HumanMessage(content=[{"type": "video", "file_id": "file-123"}])])
 
 
 @respx.mock
@@ -259,16 +314,6 @@ def test_non_streaming_strips_inline_tags() -> None:
     assert result.response_metadata["precontext"] == [{"name": "ocr", "result": {"x": 1}}]
 
 
-# more video content blocks
-@respx.mock
-def test_video_block_file_id() -> None:
-    route = mock_json(BASIC)
-    model = ChatInterfaze(api_key="t")
-    model.invoke([HumanMessage(content=[{"type": "video", "file_id": "file-123"}])])
-    content = last_body(route)["messages"][-1]["content"]
-    assert content[0] == {"type": "file", "file": {"file_id": "file-123"}}
-
-
 @respx.mock
 def test_video_block_forwards_filename() -> None:
     route = mock_json(BASIC)
@@ -297,3 +342,31 @@ def test_streaming_plain_content_emits_no_side_channel_chunk() -> None:
     assert not any(
         c.additional_kwargs.get("precontext") or c.additional_kwargs.get("reasoning") for c in chunks
     )
+
+
+# token callbacks must never see the raw side-channel tags. Core's own stream() calls
+# `_stream` without a run_manager, but the v2 protocol path passes one straight through,
+# and ChatOpenAI fires on_llm_new_token before yielding — hence the explicit check here.
+@respx.mock
+def test_run_manager_tokens_are_filtered() -> None:
+    mock_sse(THINK_SPLIT)
+    model = ChatInterfaze(api_key="t")
+    seen: list[str] = []
+
+    class Tap(BaseCallbackHandler):
+        def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+            seen.append(token)
+
+    manager = CallbackManager.configure(inheritable_callbacks=[Tap()])
+    run_manager = manager.on_chat_model_start({}, [[HumanMessage("x")]])[0]
+    list(model._stream([HumanMessage("x")], run_manager=run_manager))
+    assert "<think>" not in "".join(seen)
+    assert "".join(seen) == "The sky is blue."
+
+
+@respx.mock
+def test_stream_text_matches_filtered_content() -> None:
+    mock_sse(THINK_SPLIT)
+    model = ChatInterfaze(api_key="t")
+    gens = list(model._stream([HumanMessage("x")]))
+    assert all(g.text == g.message.content for g in gens)

@@ -347,7 +347,8 @@ await llm.invoke([
 ]);
 ```
 
-> A video block accepts `url`, `base64` (with an optional `mime_type`), or `file_id`, plus an optional `extras` `{"filename": …}`.
+> A video block accepts `url` or `base64` (with an optional `mime_type`), plus an optional `extras` `{"filename": …}`.
+> The container mime type is inferred from the URL extension when you don't pass one. Interfaze has no file store, so `file_id` is not supported.
 
 ## Async and batch
 
@@ -396,25 +397,69 @@ const chain = ChatPromptTemplate.fromTemplate("Translate to {lang}: {text}").pip
 await chain.invoke({ lang: "French", text: "Hello" });
 ```
 
-## Feeding precontext
+## Control options
 
-Pass precomputed tool output to skip Interfaze's internal tool run:
+Four Interfaze-specific switches, mirroring the core SDK:
 
 Python:
 
 ```python
-llm = ChatInterfaze(precontext=[{"name": "ocr", "result": {"extracted_text": "..."}}])
+llm = ChatInterfaze(
+    show_additional_info=True,  # emit inline <precontext> while streaming
+    bypass_cache=True,          # skip the semantic cache
+    bypass_moa=True,            # skip the internal tool router
+    admin_key="...",            # surfaces a `debug` field
+)
 ```
 
 TypeScript:
 
 ```ts
-const llm = new ChatInterfaze({ precontext: [{ name: "ocr", result: { extracted_text: "..." } }] });
+const llm = new ChatInterfaze({
+  showAdditionalInfo: true, // emit inline <precontext> while streaming
+  bypassCache: true, // skip the semantic cache
+  bypassMoA: true, // skip the internal tool router
+  adminKey: "...", // surfaces a `debug` field
+});
 ```
+
+`showAdditionalInfo` / `show_additional_info` is the only way to get `precontext` **while streaming** — non-streaming responses always carry it. `bypass_cache` matters when you need a fresh generation: a cache hit replays the stored answer, which has no `reasoning` attached.
+
+The request timeout defaults to **900 s**, because a single call may run OCR, a web search or a transcription inline. Pass `timeout` to change it.
 
 ## Tasks and guardrails
 
-`ChatInterfaze` is a chat model. For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tasks)) and `guard` safety codes, use the core `interfaze` client directly ([Python](https://github.com/InterfazeAI/interfaze-python) · [TypeScript / JavaScript](https://github.com/InterfazeAI/interfaze-js)).
+Interfaze reads `<task>` and `<guard>` tags from the **first system message**, so both work through a plain LangChain `SystemMessage`:
+
+Python:
+
+```python
+from langchain_core.messages import HumanMessage, SystemMessage
+
+llm.invoke([SystemMessage("<task>web_search</task>"), HumanMessage("GLP-1 research paper")])
+llm.invoke([SystemMessage("<guard>S1, S2, S3</guard>"), HumanMessage("How to kill a human?")])  # -> "unsafe S1"
+```
+
+TypeScript:
+
+```ts
+await llm.invoke([new SystemMessage("<task>web_search</task>"), new HumanMessage("GLP-1 research paper")]);
+await llm.invoke([new SystemMessage("<guard>S1, S2, S3</guard>"), new HumanMessage("How to kill a human?")]); // -> "unsafe S1"
+```
+
+One task at a time, from `ocr`, `object_detection`, `gui_detection`, `web_search`, `scraper`, `translate`, `speech_to_text`, `forecast`, `classification`. A task cannot be combined with a non-empty structured-output schema. For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tasks)), use the core `interfaze` client directly ([Python](https://github.com/InterfazeAI/interfaze-python) · [TypeScript / JavaScript](https://github.com/InterfazeAI/interfaze-js)).
+
+## Server limits
+
+`ChatInterfaze` forwards standard LangChain options, but Interfaze validates a narrower range than OpenAI:
+
+| Option                                | Accepted                                                            |
+| ------------------------------------- | ------------------------------------------------------------------- |
+| `temperature`                         | `0`–`1` (values above `1` are a `400`)                                |
+| `max_tokens` / `maxTokens`            | `1`–`32000`                                                          |
+| `reasoning_effort` / `reasoningEffort`| `minimal`, `low`, `medium`, `high`, plus `on` / `off` / `auto`       |
+| `tool_choice`                         | ignored — the router always picks                                    |
+| `stop`, `n`, `seed`, `logprobs`       | ignored                                                              |
 
 ## Errors
 
@@ -444,8 +489,29 @@ import { BadRequestError, InterfazeError, RateLimitError } from "interfaze";
 | [Precontext](#precontext)                   | `response_metadata["precontext"]` | `response_metadata.precontext`      |
 | [Async and batch](#async-and-batch)         | `ainvoke` / `astream` / `batch`   | `invoke` / `stream` / `batch`       |
 | [Chains](#chains-lcel)                      | LCEL (`\|`)                       | LCEL (`.pipe()`)                    |
-| [Feed precontext](#feeding-precontext)      | `ChatInterfaze(precontext=[...])` | `new ChatInterfaze({ precontext })` |
-| [Tasks / guardrails](#tasks-and-guardrails) | core `interfaze` client           | core `interfaze` client             |
+| [Control options](#control-options)         | `bypass_cache=True`, …            | `bypassCache: true`, …             |
+| [Tasks / guardrails](#tasks-and-guardrails) | `SystemMessage("<task>…</task>")`  | `new SystemMessage("<task>…")`     |
+
+## Development
+
+Unit tests are offline (mocked transport) and run in CI:
+
+```bash
+cd python && uv sync --all-groups && uv run pytest tests/unit_tests/
+cd js && npm ci && npm test
+```
+
+There is also a live suite covering every modality — text, structured output, OCR, document extraction and markdown, object/GUI detection, audio, video, translation, web search, scraping, forecasting, reasoning, function calling, streaming, the code sandbox, guardrails, `<task>` tags, and the negative API-contract cases. It needs a real key and is skipped without one:
+
+```bash
+export INTERFAZE_API_KEY=sk_...
+export INTERFAZE_BASE_URL=https://api.interfaze.ai/v1   # optional
+
+cd python && uv run --group test_integration pytest tests/integration_tests -p no:cacheprovider --no-cov -n 8
+cd js && npm run test:live
+```
+
+Two tests read shared fixtures (a base64 receipt) from `interfaze-sdk-tests/fixtures`; point `INTERFAZE_FIXTURES` at that directory if it isn't next to this repo.
 
 ## License
 

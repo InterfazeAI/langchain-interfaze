@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chunk, mockChat, sseResponse } from "./helpers.js";
+import { chunk, lastBody, mockChat, sseResponse } from "./helpers.js";
 
 async function collect(model: { stream: (i: string) => Promise<AsyncIterable<{ content: unknown; additional_kwargs: Record<string, unknown> }>> }) {
   const out: Array<{ content: unknown; additional_kwargs: Record<string, unknown> }> = [];
@@ -40,6 +40,15 @@ describe("streaming side-channel filter", () => {
     expect(text).toBe("The sky is blue.");
     const reasoning = got.filter((c) => c.additional_kwargs.reasoning);
     expect(reasoning[0]!.additional_kwargs.reasoning).toBe("Rayleigh scattering.");
+  });
+
+  // Interfaze only reports usage on a stream when asked; keep this in step with the
+  // python package, where langchain-openai leaves it off for non-OpenAI base URLs.
+  it("asks the server for streamed usage", async () => {
+    const chunks = [chunk({ content: "hi" }), chunk({}, "stop")];
+    const { model, calls } = mockChat(() => sseResponse(chunks));
+    for await (const _ of await model.stream("x")) void _;
+    expect(lastBody(calls).stream_options).toEqual({ include_usage: true });
   });
 
   it("emits no side-channel chunk for plain content", async () => {

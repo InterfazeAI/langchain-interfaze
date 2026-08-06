@@ -134,14 +134,14 @@ res.tool_calls; // [{ name: "get_weather", args: { city: "Tokyo" }, id: ... }]
 
 ## Reasoning
 
-Pass `reasoningEffort` as a call option (`"low"` / `"medium"` / `"high"`, …); the reasoning text comes back on `response_metadata.reasoning`:
+Pass `reasoningEffort` as a call option; the reasoning text comes back on `response_metadata.reasoning`:
 
 ```ts
 const res = await llm.invoke("Which region should we launch in first, and why?", { reasoningEffort: "high" });
 res.response_metadata.reasoning;
 ```
 
-Use `.withConfig({ reasoningEffort: "high" })` to apply it to every call on a model instance instead of passing it per-invoke.
+Set it once on the model with `new ChatInterfaze({ reasoningEffort: "high" })` — which also accepts the Interfaze-only `"on"` / `"off"` / `"auto"` — or per-chain with `.withConfig({ reasoningEffort: "high" })`.
 
 ## Multimodal Inputs
 
@@ -171,7 +171,8 @@ await llm.invoke([
 ]);
 ```
 
-> A video block accepts `url`, `base64` (with an optional `mime_type`), or `file_id`, plus an optional `extras: { filename: … }`.
+> A video block accepts `url` or `base64` (with an optional `mime_type`), plus an optional `extras: { filename: … }`.
+> The container mime type is inferred from the URL extension when you don't pass one. Interfaze has no file store, so `file_id` is not supported.
 
 ## Async and batch
 
@@ -200,17 +201,47 @@ const chain = ChatPromptTemplate.fromTemplate("Translate to {lang}: {text}").pip
 await chain.invoke({ lang: "French", text: "Hello" });
 ```
 
-## Feeding precontext
+## Control options
 
-Pass precomputed tool output to skip Interfaze's internal tool run:
+Four Interfaze-specific switches, mirroring the core SDK:
 
 ```ts
-const llm = new ChatInterfaze({ precontext: [{ name: "ocr", result: { extracted_text: "..." } }] });
+const llm = new ChatInterfaze({
+  showAdditionalInfo: true, // emit inline <precontext> while streaming
+  bypassCache: true, // skip the semantic cache
+  bypassMoA: true, // skip the internal tool router
+  adminKey: "...", // surfaces a `debug` field
+});
 ```
+
+`showAdditionalInfo` is the only way to get `precontext` **while streaming** — non-streaming responses always carry it. `bypassCache` matters when you need a fresh generation: a cache hit replays the stored answer, which has no `reasoning` attached.
+
+The request timeout defaults to **900 s**, because a single call may run OCR, a web search or a transcription inline. Pass `timeout` to change it.
 
 ## Tasks and guardrails
 
-`ChatInterfaze` is a chat model. For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tasks)) and `guard` safety codes, use the core [`interfaze`](https://github.com/InterfazeAI/interfaze-js) client directly.
+Interfaze reads `<task>` and `<guard>` tags from the **first system message**, so both work through a plain LangChain `SystemMessage`:
+
+```ts
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+
+await llm.invoke([new SystemMessage("<task>web_search</task>"), new HumanMessage("GLP-1 research paper")]);
+await llm.invoke([new SystemMessage("<guard>S1, S2, S3</guard>"), new HumanMessage("How to kill a human?")]); // -> "unsafe S1"
+```
+
+One task at a time, from `ocr`, `object_detection`, `gui_detection`, `web_search`, `scraper`, `translate`, `speech_to_text`, `forecast`, `classification`. A task cannot be combined with a non-empty structured-output schema. For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tasks)), use the core [`interfaze`](https://github.com/InterfazeAI/interfaze-js) client directly.
+
+## Server limits
+
+`ChatInterfaze` forwards standard LangChain options, but Interfaze validates a narrower range than OpenAI:
+
+| Option                          | Accepted                                                       |
+| ------------------------------- | -------------------------------------------------------------- |
+| `temperature`                   | `0`–`1` (values above `1` are a `400`)                         |
+| `maxTokens`                     | `1`–`32000`                                                    |
+| `reasoningEffort`               | `minimal`, `low`, `medium`, `high`, plus `on` / `off` / `auto` |
+| `tool_choice`                   | ignored — the router always picks                              |
+| `stop`, `n`, `seed`, `logprobs` | ignored                                                        |
 
 ## Errors
 
@@ -232,8 +263,8 @@ import { BadRequestError, InterfazeError, RateLimitError } from "interfaze";
 | [Precontext](#precontext)                   | `response_metadata.precontext`      |
 | [Async and batch](#async-and-batch)         | `invoke` / `stream` / `batch`       |
 | [Chains](#chains-lcel)                      | LCEL (`.pipe()`)                    |
-| [Feed precontext](#feeding-precontext)      | `new ChatInterfaze({ precontext })` |
-| [Tasks / guardrails](#tasks-and-guardrails) | core `interfaze` client             |
+| [Control options](#control-options)         | `bypassCache: true`, …              |
+| [Tasks / guardrails](#tasks-and-guardrails) | `new SystemMessage("<task>…")`      |
 
 ## License
 
