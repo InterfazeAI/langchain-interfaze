@@ -10,6 +10,7 @@ import os
 import sys
 from typing import Any
 
+from interfaze import InterfazeError
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
@@ -171,7 +172,7 @@ def precontext() -> str:
 def streamed_precontext() -> str:
     """`show_additional_info` is the only way to get precontext while streaming."""
     got: list[Any] = []
-    for chunk in make_llm(show_additional_info=True).stream(
+    for chunk in make_llm(show_additional_info=True, bypass_cache=True).stream(
         [ask("Extract the total price.", file(A["receipt"]))]
     ):
         if chunk.response_metadata.get("precontext"):
@@ -219,6 +220,25 @@ def async_smoke() -> str:
     return asyncio.run(go())
 
 
+def rejects_high_temperature() -> str:
+    from interfaze import BadRequestError
+
+    try:
+        make_llm(temperature=1.5).invoke("hi")
+    except BadRequestError:
+        return "400"
+    raise AssertionError("temperature 1.5 was accepted; the README says it is a 400")
+
+
+def rejects_video_file_id() -> str:
+    try:
+        llm.invoke([ask("what is this?", {"type": "video", "file_id": "file-123"})])
+    except InterfazeError as e:
+        _assert("file_id" in str(e), str(e))
+        return "InterfazeError"
+    raise AssertionError("file_id was accepted")
+
+
 def input_check(label: str, make_part: Any, prompt: str) -> None:
     def fn() -> str:
         res = llm.invoke([ask(prompt, make_part())])
@@ -258,6 +278,9 @@ check("<task> system message", task_tag)
 check("chain (LCEL)", chain_lcel)
 check("batch", batch)
 check("async (ainvoke + astream)", async_smoke)
+
+check("rejects temperature > 1", rejects_high_temperature)
+check("rejects a video file_id client-side", rejects_video_file_id)
 
 input_check("image url", lambda: image(A["id"]), "What kind of document is this?")
 input_check("pdf url", lambda: file(A["pdf"], "paper.pdf"), "Give the title.")

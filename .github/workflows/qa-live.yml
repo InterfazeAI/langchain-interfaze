@@ -13,6 +13,8 @@ jobs:
   python:
     name: live QA (python)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.repository_owner == 'InterfazeAI'
     defaults:
       run:
         working-directory: python
@@ -24,6 +26,10 @@ jobs:
           enable-cache: true
       - name: Install
         run: uv sync
+      - name: Check the key is configured
+        env:
+          INTERFAZE_API_KEY: ${{ secrets.INTERFAZE_API_KEY }}
+        run: test -n "$INTERFAZE_API_KEY" || { echo "::error::INTERFAZE_API_KEY secret is not set"; exit 1; }
       - name: Run live QA
         env:
           INTERFAZE_API_KEY: ${{ secrets.INTERFAZE_API_KEY }}
@@ -32,6 +38,8 @@ jobs:
   js:
     name: live QA (js)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.repository_owner == 'InterfazeAI'
     defaults:
       run:
         working-directory: js
@@ -43,6 +51,10 @@ jobs:
           cache: npm
           cache-dependency-path: js/package-lock.json
       - run: npm ci
+      - name: Check the key is configured
+        env:
+          INTERFAZE_API_KEY: ${{ secrets.INTERFAZE_API_KEY }}
+        run: test -n "$INTERFAZE_API_KEY" || { echo "::error::INTERFAZE_API_KEY secret is not set"; exit 1; }
       - name: Run live QA
         env:
           INTERFAZE_API_KEY: ${{ secrets.INTERFAZE_API_KEY }}

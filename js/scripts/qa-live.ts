@@ -141,7 +141,7 @@ await check("precontext (auto path)", async () => {
 
 await check("streamed precontext (deduped)", async () => {
   const got: unknown[] = [];
-  const stream = await makeLlm({ showAdditionalInfo: true }).stream([ask("Extract the total price.", filePart(ASSETS.receipt))]);
+  const stream = await makeLlm({ showAdditionalInfo: true, bypassCache: true }).stream([ask("Extract the total price.", filePart(ASSETS.receipt))]);
   for await (const chunk of stream) {
     if (chunk.response_metadata.precontext) got.push(chunk.response_metadata.precontext);
   }
@@ -186,13 +186,44 @@ await check("batch", async () => {
 });
 
 await check("streamEvents (tags stripped)", async () => {
+  // Must request reasoning and bypass the cache, or no <think> is ever produced and the
+  // leak assertion below passes vacuously. Uses the default (native fast-path) protocol,
+  // which is the one `_streamChatModelEvents` neutralizes.
   let out = "";
-  for await (const ev of llm.streamEvents("Why is the sky blue? Briefly.", { version: "v2" })) {
-    if (ev.event === "on_chat_model_stream") out += text(ev.data.chunk as { content: unknown });
+  const model = makeLlm({ bypassCache: true, reasoningEffort: "high" });
+  for await (const ev of model.streamEvents("Why is the sky blue? Briefly.")) {
+    if (ev.event === "content-block-delta" && ev.delta.type === "text-delta") out += ev.delta.text;
   }
   assert(out.length > 0, "no events");
   assert(!out.includes("<think>"), "think tag leaked into events");
-  return `${out.length} chars`;
+
+  let sawReasoning = false;
+  for await (const c of await model.stream("Why is the sky blue? Briefly.")) {
+    if (c.response_metadata.reasoning) sawReasoning = true;
+  }
+  assert(sawReasoning, "no reasoning produced — a <think> leak would be undetectable here");
+  return `${out.length} chars, reasoning confirmed present`;
+});
+
+await check("rejects temperature > 1", async () => {
+  try {
+    await makeLlm({ temperature: 1.5 }).invoke("hi");
+  } catch (e) {
+    const err = e as { status?: number };
+    assert(err.status === 400, `expected 400, got ${err.status}`);
+    return "400";
+  }
+  throw new Error("temperature 1.5 was accepted; the README says it is a 400");
+});
+
+await check("rejects a video file_id client-side", async () => {
+  try {
+    await llm.invoke([ask("what is this?", { type: "video", file_id: "file-123" })]);
+  } catch (e) {
+    assert((e as Error).message.includes("file_id"), (e as Error).message);
+    return "InterfazeError";
+  }
+  throw new Error("file_id was accepted");
 });
 
 // input channels

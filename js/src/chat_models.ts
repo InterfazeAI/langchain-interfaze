@@ -1,10 +1,10 @@
+import type { CallbackManagerForLLMRun } from "@langchain/core/callbacks/manager";
+import { BaseChatModel, type LangSmithParams } from "@langchain/core/language_models/chat_models";
+import type { ChatModelStreamEvent } from "@langchain/core/language_models/event";
+import { AIMessage, AIMessageChunk, type BaseMessage } from "@langchain/core/messages";
+import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
 import { ChatOpenAICompletions, type ChatOpenAIFields } from "@langchain/openai";
 import { INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError } from "interfaze";
-import { AIMessage, AIMessageChunk, type BaseMessage } from "@langchain/core/messages";
-import { BaseChatModel, type LangSmithParams } from "@langchain/core/language_models/chat_models";
-import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
-import type { CallbackManagerForLLMRun } from "@langchain/core/callbacks/manager";
-import type { ChatModelStreamEvent } from "@langchain/core/language_models/event";
 import { SideChannelFilter, stripSideChannels } from "./side_channels.js";
 import { VERSION } from "./version.js";
 
@@ -78,7 +78,13 @@ function convertVideoBlock(block: VideoBlock): Record<string, unknown> {
 
 const SIDE_FIELDS = ["precontext", "reasoning", "vcache"] as const;
 
-function applySideFields(message: AIMessage, raw: Record<string, unknown>, seen?: Set<string>): void {
+type SideChannelCarrier = {
+  content: unknown;
+  response_metadata: Record<string, unknown>;
+  additional_kwargs: Record<string, unknown>;
+};
+
+function applySideFields(message: SideChannelCarrier, raw: Record<string, unknown>, seen?: Set<string>): void {
   for (const key of SIDE_FIELDS) {
     const value = raw[key];
     if (value === undefined || value === null) continue;
@@ -131,8 +137,10 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     return "ChatInterfaze";
   }
 
+  // A provider-family id, not a model id — `interfaze-beta` reaches tracing and the LLM
+  // cache key via `ls_model_name` / `model_name`. Mirrors ChatOpenAI's "openai-chat".
   override _llmType(): string {
-    return "interfaze-beta";
+    return "interfaze";
   }
 
   override lc_namespace = ["langchain", "chat_models", PROVIDER];
@@ -180,8 +188,8 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const opts = options as { reasoningEffort?: InterfazeReasoningEffort; reasoning?: { effort?: InterfazeReasoningEffort } } | undefined;
     const effort =
       opts?.reasoning?.effort ??
-      (this.reasoning?.effort as InterfazeReasoningEffort | null | undefined) ??
       opts?.reasoningEffort ??
+      (this.reasoning?.effort as InterfazeReasoningEffort | null | undefined) ??
       this.interfazeReasoningEffort;
     if (effort != null) params.reasoning_effort = effort as NonNullable<typeof params.reasoning_effort>;
     return params;
@@ -223,19 +231,21 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const rawParts: string[] = [];
     const seen = new Set<string>();
     for await (const gen of super._streamResponseChunks(this.rewriteVideoBlocks(messages), options, runManager)) {
-      const message = gen.message;
-      if (message instanceof AIMessageChunk) {
-        message.response_metadata.model_provider = PROVIDER;
-        const raw = message.additional_kwargs.__raw_response as Record<string, unknown> | undefined;
-        if (raw) applySideFields(message, raw, seen);
-        delete message.additional_kwargs.__raw_response;
-        if (typeof message.content === "string" && message.content) {
-          rawParts.push(message.content);
-          message.content = filter.feed(message.content);
-          // handleLLMNewToken fires after the yield and reads gen.text, not
-          // message.content, so keep it in sync or callbacks see the raw tags.
-          gen.text = message.content;
-        }
+      // NOT gated on `instanceof AIMessageChunk`: Interfaze streams role-less deltas, and
+      // `@langchain/openai` falls back to `ChatMessageChunk` when no delta carries a role.
+      // That gate silently skipped the whole filter, leaking raw `<think>` to the caller.
+      const message = gen.message as unknown as SideChannelCarrier;
+      message.response_metadata.model_provider = PROVIDER;
+      const raw = message.additional_kwargs.__raw_response as Record<string, unknown> | undefined;
+      if (raw) applySideFields(message, raw, seen);
+      delete message.additional_kwargs.__raw_response;
+      if (typeof message.content === "string" && message.content) {
+        rawParts.push(message.content);
+        const filtered = filter.feed(message.content);
+        message.content = filtered;
+        // handleLLMNewToken fires after the yield and reads gen.text, not
+        // message.content, so keep it in sync or callbacks see the raw tags.
+        gen.text = filtered;
       }
       yield gen;
     }

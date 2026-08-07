@@ -1,6 +1,6 @@
+import { AIMessage } from "@langchain/core/messages";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { AIMessage } from "@langchain/core/messages";
 import { ChatInterfaze } from "../src/index.js";
 import { VERSION } from "../src/version.js";
 import { chunk, completion, jsonResponse, mockChat, sseResponse } from "./helpers.js";
@@ -9,7 +9,7 @@ describe("provider identity", () => {
   const model = new ChatInterfaze({ apiKey: "t" });
 
   it("reports interfaze, not openai", () => {
-    expect(model._llmType()).toBe("interfaze-beta");
+    expect(model._llmType()).toBe("interfaze");
     expect(model.getName()).toBe("ChatInterfaze");
     expect(model.lc_namespace).toEqual(["langchain", "chat_models", "interfaze"]);
     expect(model.lc_secrets).toEqual({ apiKey: "INTERFAZE_API_KEY" });

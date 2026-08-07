@@ -12,7 +12,7 @@ from tests.unit_tests.conftest import BASIC, mock_json
 
 def test_provider_identity() -> None:
     model = ChatInterfaze(api_key="t")
-    assert model._llm_type == "interfaze-beta"
+    assert model._llm_type == "interfaze"
     assert model._get_ls_params()["ls_provider"] == "interfaze"
     assert model.lc_secrets == {"openai_api_key": "INTERFAZE_API_KEY"}
     assert model.get_lc_namespace() == ["langchain_interfaze", "chat_models"]

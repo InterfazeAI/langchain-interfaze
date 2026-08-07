@@ -6,7 +6,7 @@ from interfaze import INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError
 from langchain_core.messages import HumanMessage
 
 from langchain_interfaze import ChatInterfaze
-from tests.unit_tests.conftest import chunk, last_body, mock_sse
+from tests.unit_tests.conftest import BASIC, chunk, last_body, mock_json, mock_sse
 
 
 # defaults
@@ -42,6 +42,25 @@ def test_defaults_to_long_timeout_but_respects_override() -> None:
 def test_never_routes_to_the_responses_api() -> None:
     # `reasoning=` would otherwise flip ChatOpenAI over to /v1/responses.
     assert ChatInterfaze(api_key="t", reasoning={"summary": "auto"}).use_responses_api is False
+
+
+@respx.mock
+def test_reasoning_kwarg_is_folded_into_reasoning_effort() -> None:
+    route = mock_json(BASIC)
+    model = ChatInterfaze(api_key="t", reasoning={"effort": "high", "summary": "auto"})
+    assert model.invoke([HumanMessage("hi")]).content == "Hi!"
+    body = last_body(route)
+    assert "reasoning" not in body
+    assert body["reasoning_effort"] == "high"
+
+
+@respx.mock
+def test_reasoning_kwarg_without_effort_is_dropped() -> None:
+    route = mock_json(BASIC)
+    ChatInterfaze(api_key="t", reasoning={"summary": "auto"}).invoke([HumanMessage("hi")])
+    body = last_body(route)
+    assert "reasoning" not in body
+    assert "reasoning_effort" not in body
 
 
 # control-plane headers

@@ -89,11 +89,25 @@ describe("ChatInterfaze constructor", () => {
     expect(lastBody(calls).reasoning_effort).toBe("high");
   });
 
-  // Upstream `_getReasoningParams` lets `reasoning.effort` win over `reasoningEffort`.
-  it("gives reasoning.effort precedence over reasoningEffort", async () => {
+  // Within one call site, `reasoning.effort` wins — matching upstream's own ordering.
+  it("gives reasoning.effort precedence over reasoningEffort per call", async () => {
     const { model, calls } = mockChat(() => jsonResponse(completion("Hi!")));
     await model.invoke("hi", { reasoning: { effort: "low" }, reasoningEffort: "high" } as never);
     expect(lastBody(calls).reasoning_effort).toBe("low");
+  });
+
+  // ...but a per-call value always beats the constructor, in either form.
+  // `.withConfig({reasoningEffort})` is the documented per-chain override.
+  it.each([
+    ["reasoning.effort", { reasoning: { effort: "low" } }],
+    ["reasoningEffort", { reasoningEffort: "low" }],
+  ])("lets a per-call effort override constructor %s", async (_label, ctor) => {
+    const { model, calls } = mockChat(() => jsonResponse(completion("Hi!")), ctor as never);
+    await model.invoke("hi", { reasoningEffort: "high" } as never);
+    expect(lastBody(calls).reasoning_effort).toBe("high");
+
+    await model.withConfig({ reasoningEffort: "minimal" } as never).invoke("hi");
+    expect(lastBody(calls).reasoning_effort).toBe("minimal");
   });
 
   it("omits reasoning_effort when unset", async () => {

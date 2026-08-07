@@ -7,6 +7,33 @@ async function collect(model: { stream: (i: string) => Promise<AsyncIterable<{ c
   return out;
 }
 
+// Interfaze sends `role` only on the first delta. If it ever sends none at all,
+// @langchain/openai yields ChatMessageChunk rather than AIMessageChunk — an
+// `instanceof AIMessageChunk` gate here would skip the filter and leak raw tags.
+describe("role-less deltas", () => {
+  const roleless = (content: string, finish: string | null = null) => ({
+    id: "req-test",
+    object: "chat.completion.chunk",
+    created: 1_700_000_000,
+    model: "interfaze-beta",
+    choices: [{ index: 0, delta: content ? { content } : {}, finish_reason: finish }],
+  });
+
+  it("still strips tags and stamps model_provider", async () => {
+    const frames = [roleless("<th"), roleless("ink>secret</think>The sky "), roleless("is blue."), roleless("", "stop")];
+    const { model } = mockChat(() => sseResponse(frames as never));
+    let text = "";
+    const providers: unknown[] = [];
+    for await (const c of await model.stream("x")) {
+      text += typeof c.content === "string" ? c.content : "";
+      providers.push(c.response_metadata.model_provider);
+    }
+    expect(text).toBe("The sky is blue.");
+    expect(text).not.toContain("<think>");
+    expect(new Set(providers)).toEqual(new Set(["interfaze"]));
+  });
+});
+
 describe("streaming side-channel filter", () => {
   it("strips inline precontext and carries it on a chunk", async () => {
     const chunks = [

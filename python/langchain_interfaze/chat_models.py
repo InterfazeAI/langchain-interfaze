@@ -35,8 +35,6 @@ _HEADER_ADMIN_KEY = "x-admin-key"
 
 _SIDE_FIELDS = ("precontext", "reasoning", "vcache")
 
-_DEDUPED_SIDE_FIELDS = ("precontext", "reasoning")
-
 _VIDEO_MIME: dict[str, str] = {
     "mp4": "video/mp4",
     "mov": "video/quicktime",
@@ -47,8 +45,12 @@ _VIDEO_MIME: dict[str, str] = {
 }
 
 
+def _carries_value(value: Any) -> bool:
+    return value is not None and value != "" and value != []
+
+
 def _extract_side_fields(data: dict[str, Any]) -> dict[str, Any]:
-    return {k: data[k] for k in _SIDE_FIELDS if data.get(k) is not None}
+    return {k: data[k] for k in _SIDE_FIELDS if _carries_value(data.get(k))}
 
 
 def _apply_side_fields(message: AIMessage, side: dict[str, Any]) -> None:
@@ -80,7 +82,6 @@ def _video_mime_from_url(url: str) -> str | None:
 
 
 def _convert_video_block(block: dict[str, Any]) -> dict[str, Any]:
-    # Interfaze has no file store: the `file` part accepts `file_data` only.
     if block.get("file_id") is not None:
         raise InterfazeError("Interfaze cannot resolve a video by 'file_id'. Pass 'url' or 'base64' instead.")
     mime = block.get("mime_type")
@@ -111,9 +112,8 @@ def _rewrite_video_blocks(content: Any) -> Any:
 
 
 def _dedupe_side_fields(message: BaseMessage, seen: set[str]) -> None:
-    """Keep each mergeable side field to the first chunk that carried it."""
-    for key in _DEDUPED_SIDE_FIELDS:
-        if key not in message.response_metadata and key not in message.additional_kwargs:
+    for key in _SIDE_FIELDS:
+        if not _carries_value(message.response_metadata.get(key)):
             continue
         if key in seen:
             message.response_metadata.pop(key, None)
@@ -158,9 +158,11 @@ class ChatInterfaze(ChatOpenAI):
     def lc_secrets(self) -> dict[str, str]:
         return {"openai_api_key": "INTERFAZE_API_KEY"}
 
+    # A provider-family id, not a model id — `interfaze-beta` reaches tracing and the LLM
+    # cache key via `ls_model_name` / `model_name`. Mirrors ChatOpenAI's "openai-chat".
     @property
     def _llm_type(self) -> str:
-        return "interfaze-beta"
+        return "interfaze"
 
     def __init__(
         self,
@@ -228,7 +230,11 @@ class ChatInterfaze(ChatOpenAI):
             else m
             for m in messages
         ]
-        return super()._get_request_payload(patched, stop=stop, **kwargs)
+        payload = super()._get_request_payload(patched, stop=stop, **kwargs)
+        reasoning = payload.pop("reasoning", None)
+        if isinstance(reasoning, dict) and reasoning.get("effort") is not None:
+            payload.setdefault("reasoning_effort", reasoning["effort"])
+        return payload
 
     def _create_chat_result(
         self,
@@ -281,10 +287,6 @@ class ChatInterfaze(ChatOpenAI):
         filt = SideChannelFilter()
         raw: list[str] = []
         seen: set[str] = set()
-        # `run_manager` is withheld from super(): ChatOpenAI fires on_llm_new_token *before*
-        # yielding, i.e. before this filter runs, so token handlers would see raw
-        # `<think>`/`<precontext>` text. Core's stream() doesn't pass a manager down, but the
-        # v2 protocol path does. Fire it here instead, once the chunk is clean.
         for gen in super()._stream(messages, stop=stop, run_manager=None, **kwargs):
             _filter_stream_chunk(gen, filt, raw)
             _dedupe_side_fields(gen.message, seen)

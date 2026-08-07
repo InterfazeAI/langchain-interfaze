@@ -118,9 +118,8 @@ def test_stream_text_matches_filtered_content() -> None:
 def test_streamed_side_fields_are_applied_once() -> None:
     mock_sse(REPEATED_SIDE)
     chunks = list(ChatInterfaze(api_key="t").stream([HumanMessage("hi")]))
-    assert sum("reasoning" in c.additional_kwargs for c in chunks) == 1
-    assert sum("precontext" in c.additional_kwargs for c in chunks) == 1
-    assert sum("vcache" in c.additional_kwargs for c in chunks) == 2
+    for key in ("reasoning", "precontext", "vcache"):
+        assert sum(key in c.additional_kwargs for c in chunks) == 1, key
 
     merged = chunks[0]
     for c in chunks[1:]:
@@ -130,6 +129,32 @@ def test_streamed_side_fields_are_applied_once() -> None:
     assert merged.additional_kwargs["precontext"] == [{"name": "ocr"}]
     assert merged.additional_kwargs["vcache"] is True
     assert merged.response_metadata["model_provider"] == "interfaze"
+
+
+@respx.mock
+def test_empty_wire_reasoning_does_not_suppress_inline_think() -> None:
+    # An empty `reasoning` on the envelope must not mark the field seen, or the genuine
+    # inline <think> text recovered from the tail is dropped in its favour.
+    mock_sse([chunk({"content": "<think>real</think>ok"}) | {"reasoning": ""}, chunk({}, "stop")])
+    out = list(ChatInterfaze(api_key="t").stream([HumanMessage("hi")]))
+    got = [c.additional_kwargs["reasoning"] for c in out if "reasoning" in c.additional_kwargs]
+    assert got == ["real"]
+
+
+@respx.mock
+def test_vcache_is_deduped_so_it_stays_a_bool() -> None:
+    mock_sse(
+        [
+            chunk({"content": "a"}) | {"vcache": True},
+            chunk({"content": "b"}) | {"vcache": False},
+            chunk({}, finish_reason="stop"),
+        ]
+    )
+    chunks = list(ChatInterfaze(api_key="t").stream([HumanMessage("hi")]))
+    merged = chunks[0]
+    for c in chunks[1:]:
+        merged = merged + c
+    assert merged.additional_kwargs["vcache"] is True
 
 
 @respx.mock
