@@ -8,6 +8,7 @@ The official [LangChain](https://js.langchain.com) integration for [Interfaze](h
 
 ```bash
 npm install @interfaze/langchain
+# or: yarn add @interfaze/langchain · pnpm add @interfaze/langchain · bun add @interfaze/langchain
 ```
 
 `@langchain/openai`, `@langchain/core`, and `interfaze` are peer dependencies - `@interfaze/langchain` builds `ChatInterfaze` on top of them. The structured-output and tool examples below use `zod` for schemas (`npm install zod`); it's an optional peer.
@@ -20,11 +21,11 @@ import { ChatInterfaze } from "@interfaze/langchain";
 const llm = new ChatInterfaze({ apiKey: "sk_..." }); // or set INTERFAZE_API_KEY and call new ChatInterfaze()
 ```
 
-`ChatInterfaze` is a standard LangChain chat model, so the usual fields (`temperature`, `maxTokens`, `timeout`, …) are forwarded; `configuration.baseURL` and `model` default to the Interfaze endpoint and `interfaze-beta`.
+`ChatInterfaze` is a standard LangChain chat model, so the usual options (`temperature`, `maxTokens`, `timeout`, `reasoningEffort`, …) are forwarded; `configuration.baseURL` and `model` default to the Interfaze endpoint and `interfaze-beta`.
 
 ## Your first request
 
-Extract structured data from an ID. Interfaze runs OCR for you, `withStructuredOutput` returns your schema, and the raw OCR lands on `response_metadata.precontext` - pass `includeRaw: true` to keep both:
+Extract structured data from an ID. Interfaze runs OCR for you, `withStructuredOutput` returns your schema, and the raw OCR lands on `response_metadata.precontext` — keep both with `includeRaw`:
 
 ```ts
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
@@ -64,6 +65,8 @@ res.response_metadata.vcache; // whether the semantic cache was hit
 
 ## Chat
 
+Pass a plain string for a one-off, or a message list for multi-turn.
+
 ```ts
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 
@@ -71,8 +74,6 @@ const res = await llm.invoke([new SystemMessage("You are concise."), new HumanMe
 
 res.content; // a web search backs the answer here
 ```
-
-Pass a plain string for a one-off (`llm.invoke("…")`), or a message list for multi-turn.
 
 ### Streaming
 
@@ -86,7 +87,7 @@ for await (const chunk of await llm.stream("Summarize this week's top AI researc
 
 ### Structured output
 
-`withStructuredOutput` takes a zod schema (or JSON schema) and returns instances:
+`withStructuredOutput` takes a zod schema (or JSON schema) and returns instances. Pass `{ includeRaw: true }` to also get the underlying `AIMessage` (and its `precontext`).
 
 ```ts
 import { z } from "zod";
@@ -106,8 +107,6 @@ await structured.invoke([
   }),
 ]); // -> { merchant: "Walmart", total: 144.02 }
 ```
-
-Pass `{ includeRaw: true }` to also get the underlying `AIMessage` (and its `precontext`).
 
 ### Tools and function calling
 
@@ -134,14 +133,14 @@ res.tool_calls; // [{ name: "get_weather", args: { city: "Tokyo" }, id: ... }]
 
 ## Reasoning
 
-Pass `reasoningEffort` as a call option; the reasoning text comes back on `response_metadata.reasoning`:
+The reasoning text comes back on `response_metadata.reasoning`. Pass `reasoningEffort` as a call option, or `.withConfig({ reasoningEffort: "high" })` to apply it to every call:
 
 ```ts
 const res = await llm.invoke("Which region should we launch in first, and why?", { reasoningEffort: "high" });
 res.response_metadata.reasoning;
 ```
 
-Set it once on the model with `new ChatInterfaze({ reasoningEffort: "high" })` — which also accepts the Interfaze-only `"on"` / `"off"` / `"auto"` — or per-chain with `.withConfig({ reasoningEffort: "high" })`.
+Set it once on the model with `new ChatInterfaze({ reasoningEffort: "high" })`, which also accepts Interfaze's `"on"` / `"off"` / `"auto"`.
 
 ## Multimodal Inputs
 
@@ -176,7 +175,7 @@ await llm.invoke([
 
 ## Async and batch
 
-`invoke`, `stream`, and `batch` are all async already - there is no separate sync API to reach for:
+`invoke`, `stream`, and `batch` are all async already (no separate sync API); `batch` fans out concurrently:
 
 ```ts
 await llm.invoke("Hello");
@@ -187,8 +186,6 @@ for await (const chunk of await llm.stream("Hello")) {
 
 await llm.batch(["Summarize A", "Summarize B", "Summarize C"]);
 ```
-
-`batch` fans the calls out concurrently.
 
 ## Chains (LCEL)
 
@@ -201,16 +198,15 @@ const chain = ChatPromptTemplate.fromTemplate("Translate to {lang}: {text}").pip
 await chain.invoke({ lang: "French", text: "Hello" });
 ```
 
-## Control options
+## Client options
 
-Four Interfaze-specific switches, mirroring the core SDK:
+Set router, cache, and streaming behavior once on the client:
 
 ```ts
 const llm = new ChatInterfaze({
   showAdditionalInfo: true, // emit inline <precontext> while streaming
   bypassCache: true, // skip the semantic cache
-  bypassMoA: true, // skip the internal tool router
-  adminKey: "...", // surfaces a `debug` field
+  bypassMoA: true, // skip the mixture-of-architecture router
 });
 ```
 
@@ -229,11 +225,13 @@ await llm.invoke([new SystemMessage("<task>web_search</task>"), new HumanMessage
 await llm.invoke([new SystemMessage("<guard>S1, S2, S3</guard>"), new HumanMessage("How to kill a human?")]); // -> "unsafe S1"
 ```
 
-One task at a time, from `ocr`, `object_detection`, `gui_detection`, `web_search`, `scraper`, `translate`, `speech_to_text`, `forecast`, `classification`. A task cannot be combined with a non-empty structured-output schema. For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tasks)), use the core [`interfaze`](https://github.com/InterfazeAI/interfaze-js) client directly.
+One task at a time, from `ocr`, `object_detection`, `gui_detection`, `web_search`, `scraper`, `translate`, `speech_to_text`, `forecast`, `classification`. A task cannot be combined with a non-empty structured-output schema.
+
+For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tasks)), use the core [`interfaze`](https://github.com/InterfazeAI/interfaze-js) client directly.
 
 ## Server limits
 
-`ChatInterfaze` forwards standard LangChain options, but Interfaze validates a narrower range than OpenAI:
+`ChatInterfaze` forwards standard LangChain options, but validates only the subset supported by Interfaze:
 
 | Option                          | Accepted                                                       |
 | ------------------------------- | -------------------------------------------------------------- |
@@ -258,12 +256,12 @@ import { BadRequestError, InterfazeError, RateLimitError } from "interfaze";
 | [Chat](#chat)                               | `invoke` / `stream`                 |
 | [Structured output](#structured-output)     | `withStructuredOutput(schema)`      |
 | [Tools](#tools-and-function-calling)        | `bindTools([...])`                  |
-| [Reasoning](#reasoning)                     | `reasoningEffort` call option       |
+| [Reasoning](#reasoning)                     | `reasoningEffort`                   |
 | [Multimodal inputs](#multimodal-inputs)     | content parts + `{ type: "video" }` |
 | [Precontext](#precontext)                   | `response_metadata.precontext`      |
 | [Async and batch](#async-and-batch)         | `invoke` / `stream` / `batch`       |
 | [Chains](#chains-lcel)                      | LCEL (`.pipe()`)                    |
-| [Control options](#control-options)         | `bypassCache: true`, …              |
+| [Client options](#client-options)           | `bypassCache: true`, …              |
 | [Tasks / guardrails](#tasks-and-guardrails) | `new SystemMessage("<task>…")`      |
 
 ## License

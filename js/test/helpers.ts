@@ -8,7 +8,6 @@ export interface CapturedRequest {
   body: Record<string, unknown> | undefined;
 }
 
-/** Build a ChatInterfaze whose underlying client uses a capturing mock `fetch`. */
 export function mockChat(
   responder: (req: CapturedRequest) => Response,
   extraFields: Partial<ChatInterfazeFields> = {}

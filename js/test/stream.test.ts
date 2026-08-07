@@ -42,8 +42,7 @@ describe("streaming side-channel filter", () => {
     expect(reasoning[0]!.additional_kwargs.reasoning).toBe("Rayleigh scattering.");
   });
 
-  // Interfaze only reports usage on a stream when asked; keep this in step with the
-  // python package, where langchain-openai leaves it off for non-OpenAI base URLs.
+  // langchain-openai leaves this off for non-OpenAI base URLs, so we opt in.
   it("asks the server for streamed usage", async () => {
     const chunks = [chunk({ content: "hi" }), chunk({}, "stop")];
     const { model, calls } = mockChat(() => sseResponse(chunks));

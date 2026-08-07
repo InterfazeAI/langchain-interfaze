@@ -9,7 +9,7 @@ describe("provider identity", () => {
   const model = new ChatInterfaze({ apiKey: "t" });
 
   it("reports interfaze, not openai", () => {
-    expect(model._llmType()).toBe("interfaze-chat");
+    expect(model._llmType()).toBe("interfaze-beta");
     expect(model.getName()).toBe("ChatInterfaze");
     expect(model.lc_namespace).toEqual(["langchain", "chat_models", "interfaze"]);
     expect(model.lc_secrets).toEqual({ apiKey: "INTERFAZE_API_KEY" });

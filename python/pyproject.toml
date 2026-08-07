@@ -35,12 +35,7 @@ test = [
   "respx==0.23.1",
   "pytest-cov==7.1.0",
 ]
-test_integration = [
-  "pytest==9.1.1",
-  "pytest-asyncio==1.4.0",
-  "pytest-timeout==2.4.0",
-  "pytest-xdist==3.8.0",
-]
+test_integration = []
 lint = ["ruff==0.16.0"]
 typing = ["mypy==2.3.0"]
 
@@ -51,9 +46,6 @@ packages = ["langchain_interfaze"]
 asyncio_mode = "auto"
 testpaths = ["tests/unit_tests"]
 addopts = "--cov=langchain_interfaze --cov-report=term-missing --cov-fail-under=95"
-# Live suite (needs INTERFAZE_API_KEY):
-#   uv run --group test_integration pytest tests/integration_tests -p no:cacheprovider --no-cov -n 8
-
 
 [tool.ruff]
 line-length = 110

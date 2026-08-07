@@ -50,7 +50,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:live": "vitest run --config vitest.live.config.ts",
+    "qa:live": "tsx scripts/qa-live.ts",
     "prepare": "tsup",
     "prepublishOnly": "npm run build"
   },
@@ -75,6 +75,7 @@
     "prettier": "^3.9.6",
     "publint": "0.3.22",
     "tsup": "^8.5.1",
+    "tsx": "^4.23.1",
     "typescript": "~5.9.3",
     "vitest": "^2.1.9",
     "zod": "^4.4.3"

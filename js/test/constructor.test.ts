@@ -66,8 +66,8 @@ describe("ChatInterfaze constructor", () => {
     expect((model as unknown as { clientConfig: { defaultHeaders?: unknown } }).clientConfig.defaultHeaders).toBeUndefined();
   });
 
-  // @langchain/openai only forwards reasoningEffort for model names its own heuristic
-  // recognizes (/^o\d/, gpt-5*), so without our override interfaze-beta loses it entirely.
+  // @langchain/openai drops reasoning params for models its heuristic doesn't
+  // recognize (/^o\d/, gpt-5*), so interfaze-beta loses them without our override.
   it.each([
     ["call option", async (m: ChatInterfaze) => m.invoke("hi", { reasoningEffort: "high" })],
     ["withConfig", async (m: ChatInterfaze) => m.withConfig({ reasoningEffort: "high" } as never).invoke("hi")],
@@ -81,6 +81,19 @@ describe("ChatInterfaze constructor", () => {
     const { model, calls } = mockChat(() => jsonResponse(completion("Hi!")), { reasoningEffort: "on" });
     await model.invoke("hi");
     expect(lastBody(calls).reasoning_effort).toBe("on");
+  });
+
+  it("forwards a constructor reasoning.effort", async () => {
+    const { model, calls } = mockChat(() => jsonResponse(completion("Hi!")), { reasoning: { effort: "high" } } as never);
+    await model.invoke("hi");
+    expect(lastBody(calls).reasoning_effort).toBe("high");
+  });
+
+  // Upstream `_getReasoningParams` lets `reasoning.effort` win over `reasoningEffort`.
+  it("gives reasoning.effort precedence over reasoningEffort", async () => {
+    const { model, calls } = mockChat(() => jsonResponse(completion("Hi!")));
+    await model.invoke("hi", { reasoning: { effort: "low" }, reasoningEffort: "high" } as never);
+    expect(lastBody(calls).reasoning_effort).toBe("low");
   });
 
   it("omits reasoning_effort when unset", async () => {

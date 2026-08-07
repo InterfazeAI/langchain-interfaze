@@ -10,33 +10,18 @@ import { VERSION } from "./version.js";
 
 const PROVIDER = "interfaze";
 
-/**
- * Interfaze runs OCR / web search / scraping / STT / forecasting inline, so a single
- * completion can legitimately take minutes. Matches the core `interfaze` SDK default.
- */
 const DEFAULT_TIMEOUT_MS = 900_000;
 
-/** Interfaze control-plane headers (mirrors the core `interfaze` SDK). */
 const HEADER_SHOW_ADDITIONAL_INFO = "x-show-additional-info";
 const HEADER_BYPASS_MOA = "x-interfaze-bypass-moa";
 const HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache";
 const HEADER_ADMIN_KEY = "x-admin-key";
 
-/** Wider than the OpenAI enum — Interfaze also accepts `on` / `off` / `auto`. */
 export type InterfazeReasoningEffort = "minimal" | "low" | "medium" | "high" | "on" | "off" | "auto";
 
 export interface ChatInterfazeFields extends Omit<ChatOpenAIFields, "reasoningEffort"> {
-  /** Interfaze API key; falls back to `process.env.INTERFAZE_API_KEY`. */
   apiKey?: string;
-  /**
-   * Default reasoning effort for every call. `@langchain/openai` drops `reasoningEffort`
-   * for model names it doesn't recognize as reasoning models, so this is forwarded here.
-   */
   reasoningEffort?: InterfazeReasoningEffort;
-  /**
-   * Emit inline `<precontext>` blocks while streaming. Interfaze only sends streamed
-   * precontext when this is on (`x-show-additional-info`).
-   */
   showAdditionalInfo?: boolean;
   /** Skip the mixture-of-architecture internal tool router (`x-interfaze-bypass-moa`). */
   bypassMoA?: boolean;
@@ -55,7 +40,6 @@ type VideoBlock = {
   extras?: { filename?: string };
 };
 
-/** Video containers Interfaze accepts, mirroring `interfaze`'s `inputs` helpers. */
 const VIDEO_MIME: Record<string, string> = {
   mp4: "video/mp4",
   mov: "video/quicktime",
@@ -72,7 +56,6 @@ function videoMimeFromUrl(url: string): string | undefined {
 }
 
 function convertVideoBlock(block: VideoBlock): Record<string, unknown> {
-  // Interfaze has no file store: the `file` part accepts `file_data` only.
   if (block.file_id !== undefined) {
     throw new InterfazeError("Interfaze cannot resolve a video by 'file_id'. Pass 'url' or 'base64' instead.");
   }
@@ -99,8 +82,6 @@ function applySideFields(message: AIMessage, raw: Record<string, unknown>, seen?
   for (const key of SIDE_FIELDS) {
     const value = raw[key];
     if (value === undefined || value === null) continue;
-    // Chunks concatenate on aggregation, so a field repeated across chunks would be
-    // duplicated (arrays) or string-concatenated (scalars). Emit each one once.
     if (seen?.has(key)) continue;
     seen?.add(key);
     message.response_metadata[key] = value;
@@ -151,7 +132,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
   }
 
   override _llmType(): string {
-    return "interfaze-chat";
+    return "interfaze-beta";
   }
 
   override lc_namespace = ["langchain", "chat_models", PROVIDER];
@@ -160,11 +141,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     return { apiKey: "INTERFAZE_API_KEY" };
   }
 
-  protected override get streamEventProvider(): string {
-    return PROVIDER;
-  }
-
-  /** Kept out of the parent, whose type is narrower than what Interfaze accepts. */
+  /** Kept off the parent, whose `reasoningEffort` type is narrower than Interfaze accepts. */
   readonly interfazeReasoningEffort?: InterfazeReasoningEffort;
 
   constructor(fields: ChatInterfazeFields = {}) {
@@ -195,18 +172,17 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     return { ...super.getLsParams(options), ls_provider: PROVIDER };
   }
 
-  /**
-   * `@langchain/openai` only forwards `reasoningEffort` for model names matching its
-   * own reasoning-model heuristic (`/^o\d/`, `gpt-5*`), so `interfaze-beta` would
-   * silently lose it. Re-attach it here from the call options or the constructor.
-   */
   override invocationParams(
     options?: this["ParsedCallOptions"],
     extra?: { streaming?: boolean }
   ): ReturnType<ChatOpenAICompletions["invocationParams"]> {
     const params = super.invocationParams(options, extra);
-    const fromOptions = options as { reasoningEffort?: InterfazeReasoningEffort; reasoning?: { effort?: InterfazeReasoningEffort } } | undefined;
-    const effort = fromOptions?.reasoningEffort ?? fromOptions?.reasoning?.effort ?? this.interfazeReasoningEffort;
+    const opts = options as { reasoningEffort?: InterfazeReasoningEffort; reasoning?: { effort?: InterfazeReasoningEffort } } | undefined;
+    const effort =
+      opts?.reasoning?.effort ??
+      (this.reasoning?.effort as InterfazeReasoningEffort | null | undefined) ??
+      opts?.reasoningEffort ??
+      this.interfazeReasoningEffort;
     if (effort != null) params.reasoning_effort = effort as NonNullable<typeof params.reasoning_effort>;
     return params;
   }
@@ -265,32 +241,26 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     }
     const tail = filter.flush();
     const { reasoning, precontext } = stripSideChannels(rawParts.join(""));
-    if (!tail && !reasoning && !precontext) return;
+    const emitReasoning = reasoning && !seen.has("reasoning");
+    const emitPrecontext = precontext && !seen.has("precontext");
+    if (!tail && !emitReasoning && !emitPrecontext) return;
     const finalMessage = new AIMessageChunk({ content: tail });
     finalMessage.response_metadata.model_provider = PROVIDER;
-    if (reasoning && !seen.has("reasoning")) {
+    if (emitReasoning) {
       finalMessage.response_metadata.reasoning = reasoning;
       finalMessage.additional_kwargs.reasoning = reasoning;
     }
-    if (precontext && !seen.has("precontext")) {
+    if (emitPrecontext) {
       finalMessage.response_metadata.precontext = precontext;
       finalMessage.additional_kwargs.precontext = precontext as never;
     }
     const finalChunk = new ChatGenerationChunk({ message: finalMessage, text: tail });
     yield finalChunk;
-    // super() fires this for every chunk it yields; the flushed tail is ours, so it
-    // would otherwise never reach token-level callbacks.
     await runManager?.handleLLMNewToken(tail, { prompt: 0, completion: 0 }, undefined, undefined, undefined, {
       chunk: finalChunk,
     });
   }
 
-  /**
-   * `ChatOpenAICompletions` ships a native protocol-stream implementation that talks to
-   * the wire directly and never calls `_streamResponseChunks`, so the side-channel
-   * filter above would be skipped. Fall back to the generic `BaseChatModel` bridge,
-   * which builds events from our filtered chunks.
-   */
   override async *_streamChatModelEvents(
     messages: BaseMessage[],
     options: this["ParsedCallOptions"],

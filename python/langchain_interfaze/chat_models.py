@@ -26,11 +26,8 @@ from langchain_interfaze._version import __version__
 
 _PROVIDER = "interfaze"
 
-# Interfaze runs OCR / web search / scraping / STT / forecasting inline, so a single
-# completion can legitimately take minutes. Matches the core `interfaze` SDK default.
 _DEFAULT_TIMEOUT = 900.0
 
-# Interfaze control-plane headers (mirrors `interfaze._constants`).
 _HEADER_SHOW_ADDITIONAL_INFO = "x-show-additional-info"
 _HEADER_BYPASS_MOA = "x-interfaze-bypass-moa"
 _HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache"
@@ -38,8 +35,9 @@ _HEADER_ADMIN_KEY = "x-admin-key"
 
 _SIDE_FIELDS = ("precontext", "reasoning", "vcache")
 
-# Video containers Interfaze accepts, mirroring `interfaze.inputs`.
-_VIDEO_MIME = {
+_DEDUPED_SIDE_FIELDS = ("precontext", "reasoning")
+
+_VIDEO_MIME: dict[str, str] = {
     "mp4": "video/mp4",
     "mov": "video/quicktime",
     "webm": "video/webm",
@@ -112,39 +110,42 @@ def _rewrite_video_blocks(content: Any) -> Any:
     return rewritten if rewritten != content else content
 
 
+def _dedupe_side_fields(message: BaseMessage, seen: set[str]) -> None:
+    """Keep each mergeable side field to the first chunk that carried it."""
+    for key in _DEDUPED_SIDE_FIELDS:
+        if key not in message.response_metadata and key not in message.additional_kwargs:
+            continue
+        if key in seen:
+            message.response_metadata.pop(key, None)
+            message.additional_kwargs.pop(key, None)
+        else:
+            seen.add(key)
+
+
 def _filter_stream_chunk(gen: ChatGenerationChunk, filt: SideChannelFilter, raw: list[str]) -> None:
     message = gen.message
     if isinstance(message, AIMessage) and isinstance(message.content, str) and message.content:
         raw.append(message.content)
         message.content = filt.feed(message.content)
-        # `gen.text` was snapshotted from the unfiltered content at construction, and it
-        # is what feeds on_llm_new_token / the event bridge — keep it in sync.
         gen.text = message.content
 
 
-def _final_side_chunk(filt: SideChannelFilter, raw: list[str]) -> ChatGenerationChunk | None:
+def _final_side_chunk(filt: SideChannelFilter, raw: list[str], seen: set[str]) -> ChatGenerationChunk | None:
     tail = filt.flush()
     _, reasoning, precontext = strip_side_channels("".join(raw))
-    if not tail and not reasoning and not precontext:
+    side: dict[str, Any] = {}
+    if reasoning and "reasoning" not in seen:
+        side["reasoning"] = reasoning
+    if precontext and "precontext" not in seen:
+        side["precontext"] = precontext
+    if not tail and not side:
         return None
     message = AIMessageChunk(content=tail)
-    side: dict[str, Any] = {}
-    if reasoning:
-        side["reasoning"] = reasoning
-    if precontext:
-        side["precontext"] = precontext
     _apply_side_fields(message, side)
     return ChatGenerationChunk(message=message)
 
 
 class ChatInterfaze(ChatOpenAI):
-    """Interfaze chat model.
-
-    Wraps the Interfaze `/v1/chat/completions` endpoint and surfaces the extra fields
-    Interfaze returns — `precontext`, `reasoning`, `vcache` — on both
-    `response_metadata` and `additional_kwargs`.
-    """
-
     @classmethod
     def is_lc_serializable(cls) -> bool:
         return False
@@ -159,7 +160,7 @@ class ChatInterfaze(ChatOpenAI):
 
     @property
     def _llm_type(self) -> str:
-        return "interfaze-chat"
+        return "interfaze-beta"
 
     def __init__(
         self,
@@ -174,20 +175,6 @@ class ChatInterfaze(ChatOpenAI):
         default_headers: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
-        """Build an Interfaze chat model.
-
-        Args:
-            api_key: Interfaze API key; falls back to `INTERFAZE_API_KEY`.
-            base_url: Overrides the Interfaze endpoint.
-            model: Defaults to `interfaze-beta`.
-            show_additional_info: Emit inline `<precontext>` blocks while streaming.
-                Interfaze only sends streamed precontext when this is on.
-            bypass_moa: Skip the mixture-of-architecture internal tool router.
-            bypass_cache: Skip the semantic cache.
-            admin_key: Admin key that surfaces a `debug` field.
-            default_headers: Extra headers merged with the Interfaze control headers.
-            kwargs: Forwarded to `ChatOpenAI`.
-        """
         key = api_key or os.environ.get("INTERFAZE_API_KEY")
         if not key:
             raise InterfazeError(
@@ -205,13 +192,7 @@ class ChatInterfaze(ChatOpenAI):
             headers[_HEADER_ADMIN_KEY] = admin_key
         if "timeout" not in kwargs and "request_timeout" not in kwargs:
             kwargs["timeout"] = _DEFAULT_TIMEOUT
-        # langchain-openai only auto-enables `stream_options.include_usage` for OpenAI's
-        # own base URL, so a custom endpoint silently loses `usage_metadata` on every
-        # streamed response. Interfaze supports it; match the JS package, which defaults on.
         kwargs.setdefault("stream_usage", True)
-        # Interfaze speaks Chat Completions only; never let a stray `reasoning=` kwarg or
-        # LC_OUTPUT_VERSION reroute the request to the OpenAI Responses API, which would
-        # bypass every hook below.
         kwargs["use_responses_api"] = False
         super().__init__(
             api_key=SecretStr(key),
@@ -221,8 +202,8 @@ class ChatInterfaze(ChatOpenAI):
             **kwargs,
         )
 
-    # Must be uniquely named: pydantic replaces same-named validators rather than
-    # chaining them, so reusing the parent's name would drop its version entry.
+    # Must be uniquely named: pydantic replaces same-named validators rather than chaining
+    # them, so reusing the parent's name would drop its version entry.
     @model_validator(mode="after")
     def _set_interfaze_version(self) -> Self:
         self._add_version("langchain-interfaze", __version__)
@@ -299,19 +280,20 @@ class ChatInterfaze(ChatOpenAI):
     ) -> Iterator[ChatGenerationChunk]:
         filt = SideChannelFilter()
         raw: list[str] = []
-        # `run_manager` is deliberately withheld from super(): ChatOpenAI fires
-        # on_llm_new_token *before* yielding, i.e. before this filter runs, so token
-        # handlers would see raw `<think>`/`<precontext>` text. Core's own stream()
-        # doesn't pass a manager down, but the v2 protocol path does. Fire it here
-        # instead, once the chunk is clean.
+        seen: set[str] = set()
+        # `run_manager` is withheld from super(): ChatOpenAI fires on_llm_new_token *before*
+        # yielding, i.e. before this filter runs, so token handlers would see raw
+        # `<think>`/`<precontext>` text. Core's stream() doesn't pass a manager down, but the
+        # v2 protocol path does. Fire it here instead, once the chunk is clean.
         for gen in super()._stream(messages, stop=stop, run_manager=None, **kwargs):
             _filter_stream_chunk(gen, filt, raw)
+            _dedupe_side_fields(gen.message, seen)
             if run_manager:
                 run_manager.on_llm_new_token(
                     gen.text, chunk=gen, logprobs=(gen.generation_info or {}).get("logprobs")
                 )
             yield gen
-        final = _final_side_chunk(filt, raw)
+        final = _final_side_chunk(filt, raw, seen)
         if final is not None:
             if run_manager:
                 run_manager.on_llm_new_token(final.text, chunk=final)
@@ -326,14 +308,16 @@ class ChatInterfaze(ChatOpenAI):
     ) -> AsyncIterator[ChatGenerationChunk]:
         filt = SideChannelFilter()
         raw: list[str] = []
+        seen: set[str] = set()
         async for gen in super()._astream(messages, stop=stop, run_manager=None, **kwargs):
             _filter_stream_chunk(gen, filt, raw)
+            _dedupe_side_fields(gen.message, seen)
             if run_manager:
                 await run_manager.on_llm_new_token(
                     gen.text, chunk=gen, logprobs=(gen.generation_info or {}).get("logprobs")
                 )
             yield gen
-        final = _final_side_chunk(filt, raw)
+        final = _final_side_chunk(filt, raw, seen)
         if final is not None:
             if run_manager:
                 await run_manager.on_llm_new_token(final.text, chunk=final)

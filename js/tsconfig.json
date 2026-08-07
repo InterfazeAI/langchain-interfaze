@@ -16,5 +16,5 @@
     "verbatimModuleSyntax": false,
     "outDir": "dist"
   },
-  "include": ["src", "test", "test-live"]
+  "include": ["src", "test", "scripts"]
 }
