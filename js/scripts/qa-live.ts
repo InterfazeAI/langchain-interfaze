@@ -59,7 +59,7 @@ const names = (m: AIMessage): string[] =>
   ((m.response_metadata.precontext as Array<{ name?: string }>) ?? []).map((p) => p?.name).filter((n): n is string => !!n);
 const text = (m: { content: unknown }) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content));
 
-// ── core ────────────────────────────────────────────────────────────────────
+// core
 await check("text generation", async () => {
   const res = await llm.invoke("Say hi in one short sentence.");
   assert(text(res).length > 0, "empty");
@@ -93,7 +93,6 @@ await check("streaming (tags stripped)", async () => {
 });
 
 await check("streaming usage metadata", async () => {
-  // `streamUsage` defaults on; @langchain/openai omits it for non-OpenAI base URLs.
   let total: number | undefined;
   for await (const chunk of await llm.stream("Say hi.")) {
     if (chunk.usage_metadata) total = chunk.usage_metadata.total_tokens;
@@ -129,8 +128,6 @@ await check("reasoning + <think>", async () => {
 });
 
 await check("reasoning_effort 'on' (constructor)", async () => {
-  // Interfaze accepts `on` / `off` / `auto` on top of the OpenAI enum, and
-  // @langchain/openai would drop the param entirely for `interfaze-beta`.
   const res = await makeLlm({ reasoningEffort: "on" }).invoke("Hello");
   assert(text(res).length > 0, "empty");
   return "accepted 'on'";
@@ -143,7 +140,6 @@ await check("precontext (auto path)", async () => {
 });
 
 await check("streamed precontext (deduped)", async () => {
-  // `showAdditionalInfo` is the only way to get precontext while streaming.
   const got: unknown[] = [];
   const stream = await makeLlm({ showAdditionalInfo: true }).stream([ask("Extract the total price.", filePart(ASSETS.receipt))]);
   for await (const chunk of stream) {
@@ -190,7 +186,6 @@ await check("batch", async () => {
 });
 
 await check("streamEvents (tags stripped)", async () => {
-  // ChatOpenAICompletions ships a native protocol stream that would bypass our filter.
   let out = "";
   for await (const ev of llm.streamEvents("Why is the sky blue? Briefly.", { version: "v2" })) {
     if (ev.event === "on_chat_model_stream") out += text(ev.data.chunk as { content: unknown });

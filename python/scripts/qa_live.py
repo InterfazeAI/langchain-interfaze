@@ -43,6 +43,7 @@ A = {
     "video": "https://download.samplelib.com/mp4/sample-5s.mp4",
     "csv": "https://r2public.jigsawstack.com/interfaze/examples/prediction-example.csv",
     "pdf": "https://arxiv.org/pdf/1706.03762",
+    "scene": "https://ultralytics.com/images/bus.jpg",
 }
 failures: list[str] = []
 

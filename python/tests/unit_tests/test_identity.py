@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import respx
-import tomllib
 from langchain_core.messages import HumanMessage
 
 from langchain_interfaze import ChatInterfaze, __version__
@@ -21,8 +21,11 @@ def test_provider_identity() -> None:
 
 
 def test_version_matches_pyproject() -> None:
-    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
-    assert tomllib.loads(pyproject.read_text())["project"]["version"] == __version__
+    # Read the raw line rather than tomllib, which is 3.11+ and this package is 3.10+.
+    pyproject = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text()
+    declared = re.search(r'^version = "([^"]+)"', pyproject, re.MULTILINE)
+    assert declared is not None, "no version in pyproject.toml"
+    assert declared.group(1) == __version__
 
 
 @respx.mock
