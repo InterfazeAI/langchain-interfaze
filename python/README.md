@@ -248,7 +248,7 @@ llm.invoke(
 )  # -> "unsafe S1"
 ```
 
-One task at a time, from `ocr`, `object_detection`, `gui_detection`, `web_search`, `scraper`, `translate`, `speech_to_text`, `forecast`. A task cannot be combined with a non-empty structured-output schema.
+One task at a time, from `ocr`, `object_detection`, `gui_detection`, `web_search`, `scraper`, `translate`, `speech_to_text`, `forecast`, `classification`. A task cannot be combined with a non-empty structured-output schema.
 
 For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tasks)), use the core [`interfaze`](https://github.com/InterfazeAI/interfaze-python) client directly.
 

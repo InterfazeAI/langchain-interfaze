@@ -445,7 +445,7 @@ await llm.invoke([new SystemMessage("<task>web_search</task>"), new HumanMessage
 await llm.invoke([new SystemMessage("<guard>S1, S2, S3</guard>"), new HumanMessage("How to kill a human?")]); // -> "unsafe S1"
 ```
 
-One task at a time, from `ocr`, `object_detection`, `gui_detection`, `web_search`, `scraper`, `translate`, `speech_to_text`, `forecast`. A task cannot be combined with a non-empty structured-output schema.
+One task at a time, from `ocr`, `object_detection`, `gui_detection`, `web_search`, `scraper`, `translate`, `speech_to_text`, `forecast`, `classification`. A task cannot be combined with a non-empty structured-output schema.
 
 For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tasks)), use the core `interfaze` client directly ([Python](https://github.com/InterfazeAI/interfaze-python) · [TypeScript / JavaScript](https://github.com/InterfazeAI/interfaze-js)).
 

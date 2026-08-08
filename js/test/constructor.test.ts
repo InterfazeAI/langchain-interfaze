@@ -59,6 +59,18 @@ describe("ChatInterfaze constructor", () => {
     });
   });
 
+  // defaultHeaders is HeadersLike; spreading it loses non-plain-object shapes.
+  it.each([
+    ["plain object", { "x-tenant": "acme" } as never],
+    ["Headers instance", new Headers({ "x-tenant": "acme" }) as never],
+    ["tuple array", [["x-tenant", "acme"]] as never],
+  ])("keeps a caller header passed as a %s", (_label, defaultHeaders) => {
+    const model = new ChatInterfaze({ apiKey: "t", bypassCache: true, configuration: { defaultHeaders } });
+    const headers = (model as unknown as { clientConfig: { defaultHeaders?: Record<string, string> } }).clientConfig.defaultHeaders;
+    expect(headers?.["x-tenant"]).toBe("acme");
+    expect(headers?.["x-interfaze-bypass-cache"]).toBe("true");
+  });
+
   it("sends no control headers by default", () => {
     const model = new ChatInterfaze({ apiKey: "t" });
     expect((model as unknown as { clientConfig: { defaultHeaders?: unknown } }).clientConfig.defaultHeaders).toBeUndefined();

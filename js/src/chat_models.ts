@@ -3,7 +3,7 @@ import { BaseChatModel, type LangSmithParams } from "@langchain/core/language_mo
 import type { ChatModelStreamEvent } from "@langchain/core/language_models/event";
 import { AIMessage, AIMessageChunk, type BaseMessage } from "@langchain/core/messages";
 import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
-import { ChatOpenAICompletions, type ChatOpenAIFields } from "@langchain/openai";
+import { ChatOpenAICompletions, type ChatOpenAIFields, normalizeHeaders } from "@langchain/openai";
 import { INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError } from "interfaze";
 import { SideChannelFilter, stripSideChannels, TAG_RE } from "./side_channels.js";
 import { VERSION } from "./version.js";
@@ -144,7 +144,10 @@ function rewriteContent(content: unknown): unknown {
 }
 
 function buildHeaders(fields: ChatInterfazeFields): Record<string, string> | undefined {
-  const headers: Record<string, string> = { ...(fields.configuration?.defaultHeaders as Record<string, string>) };
+  // defaultHeaders is HeadersLike: spreading a Headers instance yields {} and a tuple
+  // array yields {"0": [k, v]}. normalizeHeaders also lowercases, so a differently-cased
+  // caller header is replaced rather than concatenated onto ours.
+  const headers = normalizeHeaders(fields.configuration?.defaultHeaders) as Record<string, string>;
   if (fields.showAdditionalInfo) headers[HEADER_SHOW_ADDITIONAL_INFO] = "true";
   if (fields.bypassMoA) headers[HEADER_BYPASS_MOA] = "true";
   if (fields.bypassCache) headers[HEADER_BYPASS_CACHE] = "true";
@@ -214,10 +217,10 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     return params;
   }
 
-  // Interfaze omits `role` on continuation deltas, and can omit it entirely. The parent
-  // then picks ChatMessageChunk, which carries no additional_kwargs (so no
-  // __raw_response) and fails isAIMessage(). Normalize at the source, as the core
-  // interfaze SDKs do, rather than compensating downstream.
+  // Interfaze sends `role` on the first delta only. Defensive: if a stream ever opens
+  // without one, the parent picks ChatMessageChunk, which carries no additional_kwargs
+  // (so no __raw_response) and fails isAIMessage(). The core interfaze SDKs normalize
+  // the same way (interfaze-python _stream.py: `if not delta.role: delta.role = ...`).
   protected override _convertCompletionsDeltaToBaseMessageChunk(
     delta: Record<string, any>,
     rawResponse: any,
