@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
@@ -55,14 +56,8 @@ def _extract_side_fields(data: dict[str, Any]) -> dict[str, Any]:
     return {k: data[k] for k in _SIDE_FIELDS if _carries_value(data.get(k))}
 
 
-def _apply_side_fields(message: AIMessage, side: dict[str, Any], accumulate: bool = False) -> None:
+def _apply_side_fields(message: AIMessage, side: dict[str, Any]) -> None:
     for key, value in side.items():
-        prev = message.response_metadata.get(key)
-        if accumulate and prev is not None:
-            if isinstance(prev, list) and isinstance(value, list):
-                value = [*prev, *value]
-            elif isinstance(prev, str) and isinstance(value, str):
-                value = prev + value
         message.response_metadata[key] = value
         message.additional_kwargs[key] = value
 
@@ -157,13 +152,14 @@ def _filter_stream_chunk(
         gen.text = message.content
 
 
-def _missing_tail(raw: str, emitted: str) -> str:
-    """What `strip_side_channels` over the whole transcript would show, minus what streamed.
+def _visible_text(raw: str) -> str:
+    """`strip_side_channels` trims, which breaks a prefix compare against streamed text."""
+    return re.sub(r"<precontext>[\s\S]*?</precontext>", "", re.sub(r"<think>[\s\S]*?</think>", "", raw))
 
-    The interfaze SDK builds its final completion this way, so an unmatched tag survives
-    verbatim instead of being mistaken for an open side channel.
-    """
-    text = strip_side_channels(raw)[0]
+
+def _missing_tail(raw: str, emitted: str) -> str:
+    """The authoritative transcript minus what already streamed."""
+    text = _visible_text(raw)
     return text[len(emitted) :] if text.startswith(emitted) else ""
 
 

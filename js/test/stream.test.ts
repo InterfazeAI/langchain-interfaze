@@ -212,6 +212,15 @@ describe("streaming side-channel filter", () => {
     expect(merged.additional_kwargs).toHaveProperty("precontext");
   });
 
+  // stripSideChannels trims; the streamed text does not. `</think>\n` is the common shape.
+  it("recovers a tail when the visible text starts with whitespace", async () => {
+    const chunks = [chunk({ content: "<think>why</think>\nThe sky is" }), chunk({ content: " blue because <precontext>" })];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
+    expect(text).toBe("\nThe sky is blue because <precontext>");
+  });
+
   it("emits no side-channel chunk for plain content", async () => {
     const chunks = [chunk({ content: "Hello " }), chunk({ content: "world" }), chunk({}, "stop")];
     const { model } = mockChat(() => sseResponse(chunks));

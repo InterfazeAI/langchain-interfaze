@@ -32,6 +32,13 @@ describe("non-streaming side fields", () => {
     expect(res.generations[0]![0]!.text).toBe("The answer is 42");
   });
 
+  it("does not let an empty envelope value block the inline payload", async () => {
+    const content = '<precontext>[{"name":"ocr"}]</precontext>The sky is blue.';
+    const { model } = mockChat(() => jsonResponse(completion(content, { precontext: [] })));
+    const res = (await model.invoke("x")) as AIMessage;
+    expect(res.response_metadata.precontext).toEqual([{ name: "ocr" }]);
+  });
+
   it("strips inline <think>/<precontext> tags from content", async () => {
     const content = "<think>Rayleigh scattering.</think>" + '<precontext>[{"name":"ocr","result":{"x":1}}]</precontext>' + "The sky is blue.";
     const { model } = mockChat(() => jsonResponse(completion(content)));

@@ -1,6 +1,6 @@
 export type Precontext = Record<string, unknown>;
 
-const TAG_RE = (tag: string) => new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g");
+export const TAG_RE = (tag: string) => new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g");
 
 /** Pull `<think>`/`<precontext>` blocks out of content; returns the rest as `text`. */
 export function stripSideChannels(content: string): {

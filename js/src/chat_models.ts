@@ -5,7 +5,7 @@ import { AIMessage, AIMessageChunk, type BaseMessage } from "@langchain/core/mes
 import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
 import { ChatOpenAICompletions, type ChatOpenAIFields } from "@langchain/openai";
 import { INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError } from "interfaze";
-import { SideChannelFilter, stripSideChannels } from "./side_channels.js";
+import { SideChannelFilter, stripSideChannels, TAG_RE } from "./side_channels.js";
 import { VERSION } from "./version.js";
 
 const PROVIDER = "interfaze";
@@ -89,31 +89,29 @@ const ACCUMULATING_SIDE_FIELDS: readonly string[] = ["precontext", "reasoning"];
 // scalar state and dedupes by name — merging two values would concatenate them.
 const fingerprint = (key: string, value: unknown): string => (ACCUMULATING_SIDE_FIELDS.includes(key) ? `${key}:${JSON.stringify(value)}` : key);
 
-function applySideFields(message: SideChannelCarrier, raw: Record<string, unknown>, seen?: Set<string>, accumulate = false): void {
+function applySideFields(message: SideChannelCarrier, raw: Record<string, unknown>, seen?: Set<string>): void {
   for (const key of SIDE_FIELDS) {
     const value = raw[key];
     if (!carriesValue(value)) continue;
     const fp = fingerprint(key, value);
     if (seen?.has(fp)) continue;
     seen?.add(fp);
-    const prev = message.response_metadata[key];
-    let next: unknown = value;
-    if (accumulate && prev !== undefined) {
-      if (Array.isArray(prev) && Array.isArray(value)) next = [...prev, ...value];
-      else if (typeof prev === "string" && typeof value === "string") next = prev + value;
-    }
-    message.response_metadata[key] = next;
-    message.additional_kwargs[key] = next as never;
+    message.response_metadata[key] = value;
+    message.additional_kwargs[key] = value as never;
   }
 }
 
 /**
- * What `stripSideChannels` over the whole transcript would show, minus what streamed.
- * The interfaze SDK builds its final completion this way, so an unmatched tag survives
- * verbatim instead of being mistaken for an open side channel.
+ * `stripSideChannels` trims, which breaks a prefix comparison against streamed text
+ * (`</think>\n...` is the common shape). Same removal, no trim.
  */
+function visibleText(raw: string): string {
+  return raw.replace(TAG_RE("think"), "").replace(TAG_RE("precontext"), "");
+}
+
+/** The authoritative transcript minus what already streamed. */
 function missingTail(raw: string, emitted: string): string {
-  const text = stripSideChannels(raw).text;
+  const text = visibleText(raw);
   return text.startsWith(emitted) ? text.slice(emitted.length) : "";
 }
 
@@ -122,11 +120,11 @@ function stripTags(message: AIMessage): void {
   if (!message.content.includes("<think>") && !message.content.includes("<precontext>")) return;
   const { text, reasoning, precontext } = stripSideChannels(message.content);
   if (text !== message.content) message.content = text;
-  if (reasoning && message.response_metadata.reasoning === undefined) {
+  if (reasoning && !message.response_metadata.reasoning) {
     message.response_metadata.reasoning = reasoning;
     message.additional_kwargs.reasoning = reasoning as never;
   }
-  if (precontext && message.response_metadata.precontext === undefined) {
+  if (precontext && !(message.response_metadata.precontext as unknown[] | undefined)?.length) {
     message.response_metadata.precontext = precontext;
     message.additional_kwargs.precontext = precontext as never;
   }
@@ -307,28 +305,25 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const joined = rawParts.join("");
     const tail = filter.flush() || missingTail(joined, emittedParts.join(""));
     const { reasoning, precontext } = stripSideChannels(joined);
-    const leftover = new AIMessageChunk({ content: "" });
-    for (const frame of frames) applySideFields(leftover, frame, seen, true);
-    const emitReasoning = reasoning && !seen.has(fingerprint("reasoning", reasoning));
-    const emitPrecontext = precontext && !seen.has(fingerprint("precontext", precontext));
-    const hasLeftover = Object.keys(leftover.additional_kwargs).length > 0;
-    if (!tail && !emitReasoning && !emitPrecontext && !hasLeftover) return;
-    const finalMessage = new AIMessageChunk({ content: tail });
-    finalMessage.response_metadata.model_provider = PROVIDER;
-    if (emitReasoning) {
-      finalMessage.response_metadata.reasoning = reasoning;
-      finalMessage.additional_kwargs.reasoning = reasoning;
+    if (tail) {
+      const message = new AIMessageChunk({ content: tail });
+      message.response_metadata.model_provider = PROVIDER;
+      const chunk = new ChatGenerationChunk({ message, text: tail });
+      yield chunk;
+      await runManager?.handleLLMNewToken(tail, { prompt: 0, completion: 0 }, undefined, undefined, undefined, { chunk });
     }
-    if (emitPrecontext) {
-      finalMessage.response_metadata.precontext = precontext;
-      finalMessage.additional_kwargs.precontext = precontext as never;
+    const inline: Record<string, unknown> = {};
+    if (reasoning) inline.reasoning = reasoning;
+    if (precontext) inline.precontext = precontext;
+    // One chunk per source, so langchain's own merge concatenates them — the same
+    // behaviour the python package gets for free from its per-chunk conversion.
+    for (const side of [...frames, inline]) {
+      const message = new AIMessageChunk({ content: "" });
+      applySideFields(message, side, seen);
+      if (Object.keys(message.additional_kwargs).length === 0) continue;
+      message.response_metadata.model_provider = PROVIDER;
+      yield new ChatGenerationChunk({ message, text: "" });
     }
-    applySideFields(finalMessage, leftover.response_metadata, undefined, true);
-    const finalChunk = new ChatGenerationChunk({ message: finalMessage, text: tail });
-    yield finalChunk;
-    await runManager?.handleLLMNewToken(tail, { prompt: 0, completion: 0 }, undefined, undefined, undefined, {
-      chunk: finalChunk,
-    });
   }
 
   override async *_streamChatModelEvents(

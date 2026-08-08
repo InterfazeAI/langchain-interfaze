@@ -234,3 +234,26 @@ def test_generation_text_matches_stripped_content() -> None:
     mock_json(completion("<think>SECRET</think>The answer is 42"))
     res = ChatInterfaze(api_key="t").generate([[HumanMessage("x")]])
     assert res.generations[0][0].text == "The answer is 42"
+
+
+@respx.mock
+def test_tail_recovered_when_visible_text_starts_with_whitespace() -> None:
+    mock_sse(
+        [
+            chunk({"content": "<think>why</think>\nThe sky is"}),
+            chunk({"content": " blue because <precontext>"}),
+        ]
+    )
+    body = "".join(
+        c.content
+        for c in ChatInterfaze(api_key="t").stream([HumanMessage("x")])
+        if isinstance(c.content, str)
+    )
+    assert body == "\nThe sky is blue because <precontext>"
+
+
+@respx.mock
+def test_empty_envelope_value_does_not_block_inline_payload() -> None:
+    mock_json(completion('<precontext>[{"name":"ocr"}]</precontext>The sky is blue.', precontext=[]))
+    md = ChatInterfaze(api_key="t").invoke([HumanMessage("x")]).response_metadata
+    assert md["precontext"] == [{"name": "ocr"}]
