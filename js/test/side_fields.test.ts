@@ -103,6 +103,19 @@ describe("v3 metadata merge", () => {
   });
 });
 
+describe("v3 raw passthrough metadata", () => {
+  // The parent restates `usage` on two chunks and langchain's merge adds numbers, so
+  // merging it would report double the tokens a request actually cost.
+  it("reports the usage the server sent, not the sum of every frame", async () => {
+    const usage = { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 };
+    const { model } = mockChat(() => sseResponse([chunk({ content: "Hi" }), { ...chunk({}, "stop"), usage }]));
+    let finish: Record<string, any> | undefined;
+    for await (const ev of model.streamEvents("x")) if (ev.event === "message-finish") finish = ev;
+    expect(finish?.responseMetadata?.usage).toEqual(usage);
+    expect(finish?.usage).toMatchObject({ input_tokens: 100, output_tokens: 20, total_tokens: 120 });
+  });
+});
+
 describe("stream ordering", () => {
   it("attaches envelope side fields to the chunk they arrived with", async () => {
     const { model } = mockChat(() =>

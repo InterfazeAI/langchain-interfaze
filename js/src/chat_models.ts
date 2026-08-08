@@ -445,18 +445,20 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     options: this["ParsedCallOptions"],
     runManager?: CallbackManagerForLLMRun
   ): AsyncGenerator<ChatModelStreamEvent> {
-    const generationInfo: Record<string, unknown> = {};
+    const responseMetadata: Record<string, unknown> = {};
     let merged: AIMessageChunk | undefined;
     const source = this._streamResponseChunks(messages, options, runManager);
     const observed = (async function* () {
       for await (const gen of source) {
         const message = gen.message as AIMessageChunk;
-        // concat is what `.stream()` consumers get, so the accumulating side fields
-        // concatenate here too rather than the last one winning.
+        // Last wins for everything the server restates per frame. Merging those instead
+        // would sum them: the parent puts `usage` on two chunks, and langchain's merge
+        // adds numbers, so the terminal event would report double the tokens.
+        Object.assign(responseMetadata, message.response_metadata);
         merged = merged ? concat(merged, message) : message;
         for (const key of ["finish_reason", "model_name"] as const) {
           const value = gen.generationInfo?.[key];
-          if (value != null) generationInfo[key] = value;
+          if (value != null) responseMetadata[key] = value;
         }
         yield gen;
       }
@@ -466,7 +468,12 @@ export class ChatInterfaze extends ChatOpenAICompletions {
         yield event;
         continue;
       }
-      const responseMetadata = { ...merged?.response_metadata, ...generationInfo };
+      // ...except the two fields emitted one chunk per source precisely so that
+      // langchain's merge concatenates them, which is what `.stream()` consumers see.
+      for (const key of ACCUMULATING_SIDE_FIELDS) {
+        const value = merged?.response_metadata[key];
+        if (value != null) responseMetadata[key] = value;
+      }
       const reason = FINISH_REASONS[String(responseMetadata.finish_reason)];
       yield { ...event, ...(reason ? { reason } : {}), responseMetadata };
     }
