@@ -85,6 +85,14 @@ class TestChatInterfazeIntegration(ChatModelIntegrationTests):
         super().test_tool_message_histories_list_content(*args)
 
     @pytest.mark.xfail(
+        reason="Interfaze drops `tool_choice` and routes tool use itself, so binding a "
+        "runnable as a tool does not reliably produce a tool call.",
+        strict=False,
+    )
+    def test_bind_runnables_as_tools(self, model: BaseChatModel) -> None:
+        super().test_bind_runnables_as_tools(model)
+
+    @pytest.mark.xfail(
         reason="Interfaze drops `tool_choice` and routes tool use itself, so a user tool "
         "the model can answer without (here: the weather) is not reliably called."
     )

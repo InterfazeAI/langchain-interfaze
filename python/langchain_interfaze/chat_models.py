@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
@@ -34,6 +35,8 @@ _HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache"
 _HEADER_ADMIN_KEY = "x-admin-key"
 
 _SIDE_FIELDS = ("precontext", "reasoning", "vcache")
+
+_ACCUMULATING_SIDE_FIELDS = ("precontext", "reasoning")
 
 _VIDEO_MIME: dict[str, str] = {
     "mp4": "video/mp4",
@@ -111,15 +114,27 @@ def _rewrite_video_blocks(content: Any) -> Any:
     return rewritten if rewritten != content else content
 
 
+def _fingerprint(key: str, value: Any) -> str:
+    """`precontext`/`reasoning` accumulate, so only an identical payload is a duplicate.
+
+    `vcache` is scalar state — merging two different values would sum them (bool is an int).
+    """
+    if key not in _ACCUMULATING_SIDE_FIELDS:
+        return key
+    return f"{key}:{json.dumps(value, sort_keys=True, default=str)}"
+
+
 def _dedupe_side_fields(message: BaseMessage, seen: set[str]) -> None:
     for key in _SIDE_FIELDS:
-        if not _carries_value(message.response_metadata.get(key)):
+        value = message.response_metadata.get(key)
+        if not _carries_value(value):
             continue
-        if key in seen:
+        fingerprint = _fingerprint(key, value)
+        if fingerprint in seen:
             message.response_metadata.pop(key, None)
             message.additional_kwargs.pop(key, None)
         else:
-            seen.add(key)
+            seen.add(fingerprint)
 
 
 def _filter_stream_chunk(gen: ChatGenerationChunk, filt: SideChannelFilter, raw: list[str]) -> None:
@@ -134,9 +149,9 @@ def _final_side_chunk(filt: SideChannelFilter, raw: list[str], seen: set[str]) -
     tail = filt.flush()
     _, reasoning, precontext = strip_side_channels("".join(raw))
     side: dict[str, Any] = {}
-    if reasoning and "reasoning" not in seen:
+    if reasoning and _fingerprint("reasoning", reasoning) not in seen:
         side["reasoning"] = reasoning
-    if precontext and "precontext" not in seen:
+    if precontext and _fingerprint("precontext", precontext) not in seen:
         side["precontext"] = precontext
     if not tail and not side:
         return None

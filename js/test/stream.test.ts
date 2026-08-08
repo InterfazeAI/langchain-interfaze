@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chunk, lastBody, mockChat, sseResponse } from "./helpers.js";
+import { chunk, envelopeChunk, lastBody, mockChat, sseResponse } from "./helpers.js";
 
 async function collect(model: { stream: (i: string) => Promise<AsyncIterable<{ content: unknown; additional_kwargs: Record<string, unknown> }>> }) {
   const out: Array<{ content: unknown; additional_kwargs: Record<string, unknown> }> = [];
@@ -75,6 +75,45 @@ describe("streaming side-channel filter", () => {
     const { model, calls } = mockChat(() => sseResponse(chunks));
     for await (const _ of await model.stream("x")) void _;
     expect(lastBody(calls).stream_options).toEqual({ include_usage: true });
+  });
+
+  it("applies a repeated envelope side field only once", async () => {
+    const pc = [{ name: "ocr" }];
+    const chunks = [chunk({ content: "a" }, null, { precontext: pc }), chunk({ content: "b" }, null, { precontext: pc }), chunk({}, "stop")];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    expect(got.filter((c) => c.additional_kwargs.precontext)).toHaveLength(1);
+  });
+
+  it("keeps distinct envelope side fields from every chunk", async () => {
+    const chunks = [
+      chunk({ content: "a" }, null, { precontext: [{ name: "ocr" }] }),
+      chunk({ content: "b" }, null, { precontext: [{ name: "web_search" }] }),
+      chunk({}, "stop"),
+    ];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    const names = got.flatMap((c) => ((c.additional_kwargs.precontext as Array<{ name: string }>) ?? []).map((p) => p.name));
+    expect(names).toEqual(["ocr", "web_search"]);
+  });
+
+  it("surfaces side fields riding a choice-less usage frame", async () => {
+    const chunks = [
+      chunk({ content: "hi" }),
+      chunk({}, "stop"),
+      envelopeChunk({
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        precontext: [{ name: "ocr" }],
+        reasoning: "wire",
+        vcache: true,
+      }),
+    ];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    const merged = Object.assign({}, ...got.map((c) => c.additional_kwargs));
+    expect(merged.precontext).toEqual([{ name: "ocr" }]);
+    expect(merged.reasoning).toBe("wire");
+    expect(merged.vcache).toBe(true);
   });
 
   it("emits no side-channel chunk for plain content", async () => {

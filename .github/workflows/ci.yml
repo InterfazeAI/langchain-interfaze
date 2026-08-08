@@ -34,7 +34,7 @@ jobs:
         if: matrix.python-version == '3.12'
         run: uv run mypy
       - name: Unit tests
-        run: uv run pytest tests/unit_tests/
+        run: uv run pytest tests/unit_tests/ --cov=langchain_interfaze --cov-report=term-missing --cov-fail-under=95
 
   secret-scan:
     name: secret scan (gitleaks)

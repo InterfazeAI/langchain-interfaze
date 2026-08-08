@@ -45,7 +45,7 @@ packages = ["langchain_interfaze"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests/unit_tests"]
-addopts = "--cov=langchain_interfaze --cov-report=term-missing --cov-fail-under=95"
+addopts = ""
 
 [tool.ruff]
 line-length = 110

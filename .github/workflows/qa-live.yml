@@ -6,7 +6,7 @@ on:
     - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
 
 concurrency:
-  group: live-qa
+  group: live-qa-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -25,7 +25,7 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - name: Install
-        run: uv sync
+        run: uv sync --all-groups
       - name: Check the key is configured
         env:
           INTERFAZE_API_KEY: ${{ secrets.INTERFAZE_API_KEY }}

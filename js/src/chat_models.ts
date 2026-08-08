@@ -84,12 +84,22 @@ type SideChannelCarrier = {
   additional_kwargs: Record<string, unknown>;
 };
 
+const carriesValue = (value: unknown): boolean =>
+  value !== undefined && value !== null && value !== "" && !(Array.isArray(value) && value.length === 0);
+
+const ACCUMULATING_SIDE_FIELDS: readonly string[] = ["precontext", "reasoning"];
+
+// Accumulating fields dedupe by value, so a different payload still lands. `vcache` is
+// scalar state and dedupes by name — merging two values would concatenate them.
+const fingerprint = (key: string, value: unknown): string => (ACCUMULATING_SIDE_FIELDS.includes(key) ? `${key}:${JSON.stringify(value)}` : key);
+
 function applySideFields(message: SideChannelCarrier, raw: Record<string, unknown>, seen?: Set<string>): void {
   for (const key of SIDE_FIELDS) {
     const value = raw[key];
-    if (value === undefined || value === null) continue;
-    if (seen?.has(key)) continue;
-    seen?.add(key);
+    if (!carriesValue(value)) continue;
+    const fp = fingerprint(key, value);
+    if (seen?.has(fp)) continue;
+    seen?.add(fp);
     message.response_metadata[key] = value;
     message.additional_kwargs[key] = value as never;
   }
@@ -195,6 +205,24 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     return params;
   }
 
+  // The parent skips choice-less frames outright, so side fields riding a usage-only
+  // frame would never reach a chunk. Give them an empty choice to travel on.
+  override async completionWithRetry(request: any, requestOptions?: any): Promise<any> {
+    const result = await super.completionWithRetry(request, requestOptions);
+    if (!request?.stream) return result;
+    const frames = result as AsyncIterable<Record<string, unknown>>;
+    return (async function* () {
+      for await (const frame of frames) {
+        const bare = !(frame.choices as unknown[] | undefined)?.length;
+        if (bare && SIDE_FIELDS.some((k) => carriesValue(frame[k]))) {
+          yield { ...frame, choices: [{ index: 0, delta: { content: "" }, finish_reason: null }] };
+        } else {
+          yield frame;
+        }
+      }
+    })();
+  }
+
   private rewriteVideoBlocks(messages: BaseMessage[]): BaseMessage[] {
     return messages.map((m) => {
       if (!Array.isArray(m.content)) return m;
@@ -251,8 +279,8 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     }
     const tail = filter.flush();
     const { reasoning, precontext } = stripSideChannels(rawParts.join(""));
-    const emitReasoning = reasoning && !seen.has("reasoning");
-    const emitPrecontext = precontext && !seen.has("precontext");
+    const emitReasoning = reasoning && !seen.has(fingerprint("reasoning", reasoning));
+    const emitPrecontext = precontext && !seen.has(fingerprint("precontext", precontext));
     if (!tail && !emitReasoning && !emitPrecontext) return;
     const finalMessage = new AIMessageChunk({ content: tail });
     finalMessage.response_metadata.model_provider = PROVIDER;
