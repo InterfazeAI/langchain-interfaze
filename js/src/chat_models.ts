@@ -205,23 +205,37 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     return params;
   }
 
-  // The parent skips choice-less frames outright, so side fields riding a usage-only
-  // frame would never reach a chunk. Give them an empty choice to travel on.
+  // Interfaze omits `role` on continuation deltas, and can omit it entirely. The parent
+  // then picks ChatMessageChunk, which carries no additional_kwargs (so no
+  // __raw_response) and fails isAIMessage(). Normalize at the source, as the core
+  // interfaze SDKs do, rather than compensating downstream.
+  protected override _convertCompletionsDeltaToBaseMessageChunk(
+    delta: Record<string, any>,
+    rawResponse: any,
+    defaultRole?: any
+  ): ReturnType<ChatOpenAICompletions["_convertCompletionsDeltaToBaseMessageChunk"]> {
+    return super._convertCompletionsDeltaToBaseMessageChunk(delta, rawResponse, defaultRole ?? "assistant");
+  }
+
+  // The parent drops choice-less frames before building a chunk, so side fields riding a
+  // usage-only frame are invisible downstream. Observe the raw frames rather than
+  // reshaping them — injecting a choice would also duplicate the usage envelope.
   override async completionWithRetry(request: any, requestOptions?: any): Promise<any> {
     const result = await super.completionWithRetry(request, requestOptions);
-    if (!request?.stream) return result;
+    const sink = requestOptions && this.#frameSinks.get(requestOptions);
+    if (!request?.stream || !sink) return result;
     const frames = result as AsyncIterable<Record<string, unknown>>;
     return (async function* () {
       for await (const frame of frames) {
-        const bare = !(frame.choices as unknown[] | undefined)?.length;
-        if (bare && SIDE_FIELDS.some((k) => carriesValue(frame[k]))) {
-          yield { ...frame, choices: [{ index: 0, delta: { content: "" }, finish_reason: null }] };
-        } else {
-          yield frame;
-        }
+        if (SIDE_FIELDS.some((k) => carriesValue(frame[k]))) sink.push(frame);
+        yield frame;
       }
     })();
   }
+
+  // Keyed on the call options, the one object the parent hands back to
+  // completionWithRetry, so concurrent streams never share a sink.
+  readonly #frameSinks = new WeakMap<object, Array<Record<string, unknown>>>();
 
   private rewriteVideoBlocks(messages: BaseMessage[]): BaseMessage[] {
     return messages.map((m) => {
@@ -258,10 +272,9 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const filter = new SideChannelFilter();
     const rawParts: string[] = [];
     const seen = new Set<string>();
+    const frames: Array<Record<string, unknown>> = [];
+    this.#frameSinks.set(options, frames);
     for await (const gen of super._streamResponseChunks(this.rewriteVideoBlocks(messages), options, runManager)) {
-      // NOT gated on `instanceof AIMessageChunk`: Interfaze streams role-less deltas, and
-      // `@langchain/openai` falls back to `ChatMessageChunk` when no delta carries a role.
-      // That gate silently skipped the whole filter, leaking raw `<think>` to the caller.
       const message = gen.message as unknown as SideChannelCarrier;
       message.response_metadata.model_provider = PROVIDER;
       const raw = message.additional_kwargs.__raw_response as Record<string, unknown> | undefined;
@@ -281,9 +294,14 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const { reasoning, precontext } = stripSideChannels(rawParts.join(""));
     const emitReasoning = reasoning && !seen.has(fingerprint("reasoning", reasoning));
     const emitPrecontext = precontext && !seen.has(fingerprint("precontext", precontext));
-    if (!tail && !emitReasoning && !emitPrecontext) return;
+    const leftover = new AIMessageChunk({ content: "" });
+    for (const frame of frames) applySideFields(leftover, frame, seen);
+    const hasLeftover = Object.keys(leftover.additional_kwargs).length > 0;
+    if (!tail && !emitReasoning && !emitPrecontext && !hasLeftover) return;
     const finalMessage = new AIMessageChunk({ content: tail });
     finalMessage.response_metadata.model_provider = PROVIDER;
+    Object.assign(finalMessage.response_metadata, leftover.response_metadata);
+    Object.assign(finalMessage.additional_kwargs, leftover.additional_kwargs);
     if (emitReasoning) {
       finalMessage.response_metadata.reasoning = reasoning;
       finalMessage.additional_kwargs.reasoning = reasoning;

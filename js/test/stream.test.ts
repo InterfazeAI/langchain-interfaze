@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { concat } from "@langchain/core/utils/stream";
+import { isAIMessage } from "@langchain/core/messages";
 import { chunk, envelopeChunk, lastBody, mockChat, sseResponse } from "./helpers.js";
+
+async function concatAll(model: { stream: (i: string) => Promise<AsyncIterable<any>> }) {
+  let merged: any;
+  for await (const c of await model.stream("x")) merged = merged === undefined ? c : concat(merged, c);
+  return merged;
+}
 
 async function collect(model: { stream: (i: string) => Promise<AsyncIterable<{ content: unknown; additional_kwargs: Record<string, unknown> }>> }) {
   const out: Array<{ content: unknown; additional_kwargs: Record<string, unknown> }> = [];
@@ -31,6 +39,23 @@ describe("role-less deltas", () => {
     expect(text).toBe("The sky is blue.");
     expect(text).not.toContain("<think>");
     expect(new Set(providers)).toEqual(new Set(["interfaze"]));
+  });
+
+  // The role is normalized at the converter, so these stay AIMessageChunk instead of
+  // degrading to the generic ChatMessageChunk (which carries no additional_kwargs).
+  it("yields AIMessageChunk and keeps envelope side fields", async () => {
+    const frames = [{ ...roleless("Hello "), precontext: [{ name: "ocr" }], vcache: true }, roleless("world"), roleless("", "stop")];
+    const { model } = mockChat(() => sseResponse(frames as never));
+    const got = await collect(model as never);
+    const merged = await (async () => {
+      let m: any;
+      for (const c of got) m = m === undefined ? c : concat(m, c);
+      return m;
+    })();
+    expect(new Set(got.map((c) => c.constructor.name))).toEqual(new Set(["AIMessageChunk"]));
+    expect(isAIMessage(merged)).toBe(true);
+    expect(merged.additional_kwargs.precontext).toEqual([{ name: "ocr" }]);
+    expect(merged.additional_kwargs.vcache).toBe(true);
   });
 });
 
@@ -109,11 +134,26 @@ describe("streaming side-channel filter", () => {
       }),
     ];
     const { model } = mockChat(() => sseResponse(chunks));
-    const got = await collect(model as never);
-    const merged = Object.assign({}, ...got.map((c) => c.additional_kwargs));
-    expect(merged.precontext).toEqual([{ name: "ocr" }]);
-    expect(merged.reasoning).toBe("wire");
-    expect(merged.vcache).toBe(true);
+    const merged = await concatAll(model as never);
+    expect(merged.additional_kwargs.precontext).toEqual([{ name: "ocr" }]);
+    expect(merged.additional_kwargs.reasoning).toBe("wire");
+    expect(merged.additional_kwargs.vcache).toBe(true);
+    // Observing the frame rather than reshaping it: a fabricated choice would make the
+    // parent stamp usage twice, and _mergeDicts sums numbers.
+    expect(merged.response_metadata.usage).toEqual({ prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 });
+  });
+
+  it("delivers an envelope that arrives before the first assistant delta", async () => {
+    const chunks = [envelopeChunk({ precontext: [{ name: "ocr" }], vcache: true }), chunk({ content: "hi" }), chunk({}, "stop")];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const merged = await concatAll(model as never);
+    expect(merged.additional_kwargs.precontext).toEqual([{ name: "ocr" }]);
+    expect(merged.additional_kwargs.vcache).toBe(true);
+  });
+
+  it("adds no extra chunk to a plain stream", async () => {
+    const { model } = mockChat(() => sseResponse([chunk({ content: "hi" }), chunk({}, "stop")]));
+    expect(await collect(model as never)).toHaveLength(2);
   });
 
   it("emits no side-channel chunk for plain content", async () => {

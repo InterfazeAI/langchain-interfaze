@@ -126,7 +126,11 @@ def _fingerprint(key: str, value: Any) -> str:
 
 def _dedupe_side_fields(message: BaseMessage, seen: set[str]) -> None:
     for key in _SIDE_FIELDS:
+        # The response_format branch builds chunks from additional_kwargs alone, with no
+        # response_metadata, so reading one map lets those bypass dedupe entirely.
         value = message.response_metadata.get(key)
+        if not _carries_value(value):
+            value = message.additional_kwargs.get(key)
         if not _carries_value(value):
             continue
         fingerprint = _fingerprint(key, value)
