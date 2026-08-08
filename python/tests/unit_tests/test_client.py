@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 import respx
 from interfaze import INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError
@@ -90,3 +92,33 @@ def test_streaming_asks_for_usage() -> None:
     route = mock_sse([chunk({"content": "hi"}), chunk({}, finish_reason="stop")])
     list(ChatInterfaze(api_key="t").stream([HumanMessage("hi")]))
     assert last_body(route)["stream_options"] == {"include_usage": True}
+
+
+def test_cache_key_distinguishes_header_values() -> None:
+    a = ChatInterfaze(api_key="k", default_headers={"x-tenant": "a"})
+    b = ChatInterfaze(api_key="k", default_headers={"x-tenant": "b"})
+    assert a._get_llm_string() != b._get_llm_string()
+
+
+def test_control_header_replaces_a_differently_cased_one() -> None:
+    model = ChatInterfaze(
+        api_key="k", bypass_cache=True, default_headers={"X-Interfaze-Bypass-Cache": "false"}
+    )
+    assert model.default_headers == {"x-interfaze-bypass-cache": "true"}
+
+
+@pytest.mark.parametrize(
+    ("model_kwargs", "call_kwargs", "expected"),
+    [
+        ({}, {"reasoning": {"effort": "high"}, "reasoning_effort": "low"}, "high"),
+        ({"reasoning": {"effort": "low"}}, {"reasoning_effort": "high"}, "high"),
+        ({"reasoning_effort": "low"}, {"reasoning": {"effort": "high"}}, "high"),
+        ({"reasoning_effort": "on"}, {}, "on"),
+    ],
+)
+def test_reasoning_effort_precedence(
+    model_kwargs: dict[str, Any], call_kwargs: dict[str, Any], expected: str
+) -> None:
+    """Same ladder as the JS package: a per-call value always beats a model-level one."""
+    model = ChatInterfaze(api_key="k", **model_kwargs)
+    assert model._get_request_payload([HumanMessage("x")], **call_kwargs)["reasoning_effort"] == expected

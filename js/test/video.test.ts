@@ -47,6 +47,19 @@ describe("video content blocks", () => {
     expect(file).toEqual({ file_data: VIDEO_URL, format: "video/mp4", filename: "clip.mp4" });
   });
 
+  // url: null is the natural shape from a deserialized message
+  it("falls through an explicit null url to base64", async () => {
+    const { model, calls } = mockChat(() => jsonResponse(completion()));
+    await model.invoke([new HumanMessage({ content: [{ type: "video", url: null, base64: "AAAA" }] as never })]);
+    expect(lastContent(calls)[0]!.file).toEqual({ file_data: "data:video/mp4;base64,AAAA", format: "video/mp4" });
+  });
+
+  it("ignores an explicit null file_id", async () => {
+    const { model, calls } = mockChat(() => jsonResponse(completion()));
+    await model.invoke([new HumanMessage({ content: [{ type: "video", url: VIDEO_URL, file_id: null }] as never })]);
+    expect(lastContent(calls)[0]!.file).toEqual({ file_data: VIDEO_URL, format: "video/mp4" });
+  });
+
   it("throws when a video block has no source", async () => {
     const { model } = mockChat(() => jsonResponse(completion()));
     await expect(model.invoke([new HumanMessage({ content: [{ type: "video" }] as never })])).rejects.toThrow(InterfazeError);

@@ -218,7 +218,25 @@ describe("streaming side-channel filter", () => {
     const { model } = mockChat(() => sseResponse(chunks));
     const got = await collect(model as never);
     const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
-    expect(text).toBe("\nThe sky is blue because <precontext>");
+    // the tail is recovered, but a half-written <precontext> is metadata and is cut
+    expect(text).toBe("\nThe sky is blue because ");
+  });
+
+  it("never shows a truncated <precontext> as content", async () => {
+    const chunks = [chunk({ content: "Total is " }), chunk({ content: '<precontext>[{"name":"ocr","result":{"ssn":"123-45-6789"' }, "length")];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
+    expect(text).toBe("Total is ");
+    expect(text).not.toContain("123-45-6789");
+  });
+
+  it("stamps the stream id on synthetic chunks", async () => {
+    const chunks = [chunk({ content: "<think>r</think>Hi" }), chunk({}, "stop")];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    const ids = new Set(got.map((c) => (c as unknown as { id?: string }).id));
+    expect(ids.size).toBe(1);
   });
 
   it("emits no side-channel chunk for plain content", async () => {

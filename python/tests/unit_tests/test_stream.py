@@ -249,7 +249,8 @@ def test_tail_recovered_when_visible_text_starts_with_whitespace() -> None:
         for c in ChatInterfaze(api_key="t").stream([HumanMessage("x")])
         if isinstance(c.content, str)
     )
-    assert body == "\nThe sky is blue because <precontext>"
+    # the tail is recovered, but a half-written <precontext> is metadata and is cut
+    assert body == "\nThe sky is blue because "
 
 
 @respx.mock
@@ -257,3 +258,22 @@ def test_empty_envelope_value_does_not_block_inline_payload() -> None:
     mock_json(completion('<precontext>[{"name":"ocr"}]</precontext>The sky is blue.', precontext=[]))
     md = ChatInterfaze(api_key="t").invoke([HumanMessage("x")]).response_metadata
     assert md["precontext"] == [{"name": "ocr"}]
+
+
+@respx.mock
+def test_truncated_precontext_is_not_shown_as_content() -> None:
+    """A half-written <precontext> is internal tool JSON, never the answer."""
+    mock_sse(
+        [
+            chunk({"content": "Total is "}),
+            chunk({"content": '<precontext>[{"name":"ocr","result":{"ssn":"123-45-6789"'}, "length"),
+        ]
+    )
+    body = "".join(
+        c.content
+        for c in ChatInterfaze(api_key="t").stream([HumanMessage("x")])
+        if isinstance(c.content, str)
+    )
+    assert "precontext" not in body
+    assert "123-45-6789" not in body
+    assert body == "Total is "

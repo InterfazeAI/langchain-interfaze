@@ -152,9 +152,24 @@ def _filter_stream_chunk(
         gen.text = message.content
 
 
+def _first_effort(*sources: Any) -> Any:
+    """Call-level `reasoning.effort`, then call `reasoning_effort`, then the model's."""
+    for source in sources:
+        effort = source.get("effort") if isinstance(source, dict) else source
+        if effort is not None:
+            return effort
+    return None
+
+
 def _visible_text(raw: str) -> str:
-    """`strip_side_channels` trims, which breaks a prefix compare against streamed text."""
-    return re.sub(r"<precontext>[\s\S]*?</precontext>", "", re.sub(r"<think>[\s\S]*?</think>", "", raw))
+    """`strip_side_channels` trims, which breaks a prefix compare against streamed text.
+
+    `<think>` is prose and survives an unterminated tag verbatim, matching the SDK. A
+    half-written `<precontext>` is JSON metadata, so the text is cut there instead.
+    """
+    text = re.sub(r"<precontext>[\s\S]*?</precontext>", "", re.sub(r"<think>[\s\S]*?</think>", "", raw))
+    open_at = text.find("<precontext>")
+    return text if open_at == -1 else text[:open_at]
 
 
 def _missing_tail(raw: str, emitted: str) -> str:
@@ -220,7 +235,7 @@ class ChatInterfaze(ChatOpenAI):
                 "Missing API key. Pass ChatInterfaze(api_key=...) or set the INTERFAZE_API_KEY "
                 "environment variable."
             )
-        headers = dict(default_headers or {})
+        headers = {k.lower(): v for k, v in (default_headers or {}).items()}
         if show_additional_info:
             headers[_HEADER_SHOW_ADDITIONAL_INFO] = "true"
         if bypass_moa:
@@ -251,7 +266,7 @@ class ChatInterfaze(ChatOpenAI):
         # Without these, set_llm_cache serves a bypass_cache model the plain model's answer.
         params = {**super()._identifying_params, "_type": self._llm_type}
         if self.default_headers:
-            params["interfaze_headers"] = sorted(self.default_headers)
+            params["interfaze_headers"] = sorted(self.default_headers.items())
         return params
 
     def _get_ls_params(self, stop: list[str] | None = None, **kwargs: Any) -> Any:
@@ -274,9 +289,14 @@ class ChatInterfaze(ChatOpenAI):
             for m in messages
         ]
         payload = super()._get_request_payload(patched, stop=stop, **kwargs)
-        reasoning = payload.pop("reasoning", None)
-        if isinstance(reasoning, dict) and reasoning.get("effort") is not None:
-            payload.setdefault("reasoning_effort", reasoning["effort"])
+        # Interfaze has no `reasoning` param; fold it into reasoning_effort using the same
+        # precedence as the JS package — a per-call value always beats a model-level one.
+        payload.pop("reasoning", None)
+        effort = _first_effort(
+            kwargs.get("reasoning"), kwargs.get("reasoning_effort"), self.reasoning, self.reasoning_effort
+        )
+        if effort is not None:
+            payload["reasoning_effort"] = effort
         return payload
 
     def _create_chat_result(

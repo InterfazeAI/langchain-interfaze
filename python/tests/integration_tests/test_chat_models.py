@@ -81,8 +81,8 @@ class TestChatInterfazeIntegration(ChatModelIntegrationTests):
         reason="Interfaze rejects assistant messages whose content is a list of blocks "
         "(400 invalid_request on messages.N); only string content is accepted there."
     )
-    def test_tool_message_histories_list_content(self, *args: Any) -> None:
-        super().test_tool_message_histories_list_content(*args)
+    def test_tool_message_histories_list_content(self, model: BaseChatModel, my_adder_tool: Any) -> None:
+        super().test_tool_message_histories_list_content(model, my_adder_tool)
 
     @pytest.mark.xfail(
         reason="Interfaze drops `tool_choice` and routes tool use itself, so binding a "

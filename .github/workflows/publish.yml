@@ -63,6 +63,7 @@ jobs:
 
   npm-publish:
     name: Publish to npm
+    needs: build
     runs-on: ubuntu-latest
     if: github.event.release.prerelease == false
     permissions:
@@ -84,6 +85,7 @@ jobs:
 
   jsr-publish:
     name: Publish to JSR
+    needs: build
     runs-on: ubuntu-latest
     if: github.event.release.prerelease == false
     permissions:

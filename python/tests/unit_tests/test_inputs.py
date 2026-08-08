@@ -54,12 +54,14 @@ def test_video_block_forwards_filename() -> None:
     assert file["filename"] == "clip.mp4"
 
 
+@respx.mock
 def test_video_block_file_id_raises() -> None:
     model = ChatInterfaze(api_key="t")
     with pytest.raises(InterfazeError, match="file_id"):
         model.invoke([HumanMessage(content=[{"type": "video", "file_id": "file-123"}])])
 
 
+@respx.mock
 def test_video_block_missing_source_raises() -> None:
     model = ChatInterfaze(api_key="t")
     with pytest.raises(InterfazeError, match="requires one of"):

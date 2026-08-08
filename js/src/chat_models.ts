@@ -53,15 +53,15 @@ function videoMimeFromUrl(url: string): string | undefined {
 }
 
 function convertVideoBlock(block: VideoBlock): Record<string, unknown> {
-  if (block.file_id !== undefined) {
+  if (block.file_id != null) {
     throw new InterfazeError("Interfaze cannot resolve a video by 'file_id'. Pass 'url' or 'base64' instead.");
   }
   let mime = block.mime_type;
   let file: Record<string, unknown>;
-  if (block.url !== undefined) {
+  if (block.url != null) {
     file = { file_data: block.url };
     mime = mime ?? videoMimeFromUrl(block.url);
-  } else if (block.base64 !== undefined) {
+  } else if (block.base64 != null) {
     mime = mime ?? "video/mp4";
     file = { file_data: `data:${mime};base64,${block.base64}` };
   } else {
@@ -82,6 +82,9 @@ type SideChannelCarrier = {
 };
 
 const carriesValue = (value: unknown): boolean => value !== undefined && value !== null && value !== "";
+
+/** Truthy, but an empty array counts as "present with no entries". */
+const hasValue = (value: unknown): boolean => (Array.isArray(value) ? value.length > 0 : Boolean(value));
 
 const ACCUMULATING_SIDE_FIELDS: readonly string[] = ["precontext", "reasoning"];
 
@@ -106,7 +109,9 @@ function applySideFields(message: SideChannelCarrier, raw: Record<string, unknow
  * (`</think>\n...` is the common shape). Same removal, no trim.
  */
 function visibleText(raw: string): string {
-  return raw.replace(TAG_RE("think"), "").replace(TAG_RE("precontext"), "");
+  const text = raw.replace(TAG_RE("think"), "").replace(TAG_RE("precontext"), "");
+  const open = text.indexOf("<precontext>");
+  return open === -1 ? text : text.slice(0, open);
 }
 
 /** The authoritative transcript minus what already streamed. */
@@ -120,11 +125,11 @@ function stripTags(message: AIMessage): void {
   if (!message.content.includes("<think>") && !message.content.includes("<precontext>")) return;
   const { text, reasoning, precontext } = stripSideChannels(message.content);
   if (text !== message.content) message.content = text;
-  if (reasoning && !message.response_metadata.reasoning) {
+  if (reasoning && !hasValue(message.response_metadata.reasoning)) {
     message.response_metadata.reasoning = reasoning;
     message.additional_kwargs.reasoning = reasoning as never;
   }
-  if (precontext && !(message.response_metadata.precontext as unknown[] | undefined)?.length) {
+  if (precontext && !hasValue(message.response_metadata.precontext)) {
     message.response_metadata.precontext = precontext;
     message.additional_kwargs.precontext = precontext as never;
   }
@@ -288,8 +293,10 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const seen = new Set<string>();
     const frames: Array<Record<string, unknown>> = [];
     this.#frameSinks.set(options, frames);
+    let streamId: string | undefined;
     for await (const gen of super._streamResponseChunks(this.rewriteVideoBlocks(messages), options, runManager)) {
       const message = gen.message as unknown as SideChannelCarrier;
+      streamId ??= (gen.message as AIMessageChunk).id;
       message.response_metadata.model_provider = PROVIDER;
       const raw = message.additional_kwargs.__raw_response as Record<string, unknown> | undefined;
       if (raw) applySideFields(message, raw, seen);
@@ -309,7 +316,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const tail = filter.flush() || missingTail(joined, emittedParts.join(""));
     const { reasoning, precontext } = stripSideChannels(joined);
     if (tail) {
-      const message = new AIMessageChunk({ content: tail });
+      const message = new AIMessageChunk({ content: tail, id: streamId });
       message.response_metadata.model_provider = PROVIDER;
       const chunk = new ChatGenerationChunk({ message, text: tail });
       yield chunk;
@@ -321,7 +328,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     // One chunk per source, so langchain's own merge concatenates them — the same
     // behaviour the python package gets for free from its per-chunk conversion.
     for (const side of [...frames, inline]) {
-      const message = new AIMessageChunk({ content: "" });
+      const message = new AIMessageChunk({ content: "", id: streamId });
       applySideFields(message, side, seen);
       if (Object.keys(message.additional_kwargs).length === 0) continue;
       message.response_metadata.model_provider = PROVIDER;
