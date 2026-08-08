@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "langchain-interfaze"
 version = "1.0.0"
 description = "Interfaze Langchain SDK"
+readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "InterfazeAI" }]
