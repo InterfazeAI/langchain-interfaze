@@ -103,20 +103,13 @@ function applySideFields(message: SideChannelCarrier, raw: Record<string, unknow
 }
 
 /**
- * A truncated response leaves a tag open; the filter buffers everything after it and
- * drops it on flush. `after` is exactly that swallowed remainder — streaming has already
- * emitted `before`, so re-emitting it would duplicate the prefix.
+ * What `stripSideChannels` over the whole transcript would show, minus what streamed.
+ * The interfaze SDK builds its final completion this way, so an unmatched tag survives
+ * verbatim instead of being mistaken for an open side channel.
  */
-function unterminatedTag(raw: string): { before: string; after: string } | null {
+function missingTail(raw: string, emitted: string): string {
   const text = stripSideChannels(raw).text;
-  for (const tag of ["<think>", "<precontext>"]) {
-    const start = text.indexOf(tag);
-    if (start === -1 || text.slice(start).includes(`</${tag.slice(1)}`)) continue;
-    // A half-written <precontext> is partial metadata JSON, not answer text — drop it.
-    const after = tag === "<think>" ? text.slice(start + tag.length) : "";
-    return { before: text.slice(0, start), after };
-  }
-  return null;
+  return text.startsWith(emitted) ? text.slice(emitted.length) : "";
 }
 
 function stripTags(message: AIMessage): void {
@@ -284,6 +277,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
   ): AsyncGenerator<ChatGenerationChunk> {
     const filter = new SideChannelFilter();
     const rawParts: string[] = [];
+    const emittedParts: string[] = [];
     const seen = new Set<string>();
     const frames: Array<Record<string, unknown>> = [];
     this.#frameSinks.set(options, frames);
@@ -296,6 +290,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
       if (typeof message.content === "string" && message.content) {
         rawParts.push(message.content);
         const filtered = filter.feed(message.content);
+        emittedParts.push(filtered);
         message.content = filtered;
         // handleLLMNewToken fires after the yield and reads gen.text, not
         // message.content, so keep it in sync or callbacks see the raw tags.
@@ -304,7 +299,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
       yield gen;
     }
     const joined = rawParts.join("");
-    const tail = filter.flush() || unterminatedTag(joined)?.after.trim() || "";
+    const tail = filter.flush() || missingTail(joined, emittedParts.join(""));
     const { reasoning, precontext } = stripSideChannels(joined);
     const emitReasoning = reasoning && !seen.has(fingerprint("reasoning", reasoning));
     const emitPrecontext = precontext && !seen.has(fingerprint("precontext", precontext));

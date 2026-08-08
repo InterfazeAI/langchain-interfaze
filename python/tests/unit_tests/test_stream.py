@@ -178,7 +178,8 @@ def test_unterminated_tag_recovers_text() -> None:
     )
     chunks = list(ChatInterfaze(api_key="t").stream([HumanMessage("x")]))
     body = "".join(c.content for c in chunks if isinstance(c.content, str))
-    assert body == "never closed and the real answer 42"
+    # Matches the SDK: an unmatched tag survives verbatim rather than being swallowed.
+    assert body == "<think>never closed and the real answer 42"
 
 
 @respx.mock
@@ -194,4 +195,4 @@ def test_unterminated_tag_mid_text_does_not_duplicate_prefix() -> None:
     mock_sse([chunk({"content": "The answer is 42. <think>because reasons"}), chunk({}, "length")])
     chunks = list(ChatInterfaze(api_key="t").stream([HumanMessage("x")]))
     body = "".join(c.content for c in chunks if isinstance(c.content, str))
-    assert body == "The answer is 42. because reasons"
+    assert body == "The answer is 42. <think>because reasons"

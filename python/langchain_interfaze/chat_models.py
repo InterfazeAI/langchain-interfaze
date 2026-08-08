@@ -140,37 +140,35 @@ def _dedupe_side_fields(message: BaseMessage, seen: set[str]) -> None:
             seen.add(fingerprint)
 
 
-def _filter_stream_chunk(gen: ChatGenerationChunk, filt: SideChannelFilter, raw: list[str]) -> None:
+def _filter_stream_chunk(
+    gen: ChatGenerationChunk, filt: SideChannelFilter, raw: list[str], emitted: list[str]
+) -> None:
     message = gen.message
     if isinstance(message, AIMessage) and isinstance(message.content, str) and message.content:
         raw.append(message.content)
         message.content = filt.feed(message.content)
+        emitted.append(message.content)
         gen.text = message.content
 
 
-def _unterminated_tag(raw: str) -> tuple[str, str] | None:
-    """A truncated response leaves a tag open; the filter buffers what follows and drops it.
+def _missing_tail(raw: str, emitted: str) -> str:
+    """What `strip_side_channels` over the whole transcript would show, minus what streamed.
 
-    Returns (before, after). Streaming already emitted `before`, so only `after` was lost.
+    The interfaze SDK builds its final completion this way, so an unmatched tag survives
+    verbatim instead of being mistaken for an open side channel.
     """
     text = strip_side_channels(raw)[0]
-    for tag in ("<think>", "<precontext>"):
-        start = text.find(tag)
-        if start == -1 or f"</{tag[1:]}" in text[start:]:
-            continue
-        # A half-written <precontext> is partial metadata JSON, not answer text — drop it.
-        after = text[start + len(tag) :] if tag == "<think>" else ""
-        return text[:start], after
-    return None
+    return text[len(emitted) :] if text.startswith(emitted) else ""
 
 
-def _final_side_chunk(filt: SideChannelFilter, raw: list[str], seen: set[str]) -> ChatGenerationChunk | None:
+def _final_side_chunk(
+    filt: SideChannelFilter, raw: list[str], seen: set[str], emitted: list[str]
+) -> ChatGenerationChunk | None:
     tail = filt.flush()
     joined = "".join(raw)
     _, reasoning, precontext = strip_side_channels(joined)
     if not tail:
-        open_tag = _unterminated_tag(joined)
-        tail = open_tag[1].strip() if open_tag else ""
+        tail = _missing_tail(joined, "".join(emitted))
     side: dict[str, Any] = {}
     if reasoning and _fingerprint("reasoning", reasoning) not in seen:
         side["reasoning"] = reasoning
@@ -321,16 +319,17 @@ class ChatInterfaze(ChatOpenAI):
     ) -> Iterator[ChatGenerationChunk]:
         filt = SideChannelFilter()
         raw: list[str] = []
+        emitted: list[str] = []
         seen: set[str] = set()
         for gen in super()._stream(messages, stop=stop, run_manager=None, **kwargs):
-            _filter_stream_chunk(gen, filt, raw)
+            _filter_stream_chunk(gen, filt, raw, emitted)
             _dedupe_side_fields(gen.message, seen)
             if run_manager:
                 run_manager.on_llm_new_token(
                     gen.text, chunk=gen, logprobs=(gen.generation_info or {}).get("logprobs")
                 )
             yield gen
-        final = _final_side_chunk(filt, raw, seen)
+        final = _final_side_chunk(filt, raw, seen, emitted)
         if final is not None:
             if run_manager:
                 run_manager.on_llm_new_token(final.text, chunk=final)
@@ -345,16 +344,17 @@ class ChatInterfaze(ChatOpenAI):
     ) -> AsyncIterator[ChatGenerationChunk]:
         filt = SideChannelFilter()
         raw: list[str] = []
+        emitted: list[str] = []
         seen: set[str] = set()
         async for gen in super()._astream(messages, stop=stop, run_manager=None, **kwargs):
-            _filter_stream_chunk(gen, filt, raw)
+            _filter_stream_chunk(gen, filt, raw, emitted)
             _dedupe_side_fields(gen.message, seen)
             if run_manager:
                 await run_manager.on_llm_new_token(
                     gen.text, chunk=gen, logprobs=(gen.generation_info or {}).get("logprobs")
                 )
             yield gen
-        final = _final_side_chunk(filt, raw, seen)
+        final = _final_side_chunk(filt, raw, seen, emitted)
         if final is not None:
             if run_manager:
                 await run_manager.on_llm_new_token(final.text, chunk=final)

@@ -162,7 +162,8 @@ describe("streaming side-channel filter", () => {
     const { model } = mockChat(() => sseResponse(chunks));
     const got = await collect(model as never);
     const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
-    expect(text).toBe("never closed and the real answer 42");
+    // Matches the SDK: an unmatched tag survives verbatim rather than being swallowed.
+    expect(text).toBe("<think>never closed and the real answer 42");
   });
 
   // Non-streaming has the whole body, so an unmatched tag is prose and must survive
@@ -177,7 +178,7 @@ describe("streaming side-channel filter", () => {
     const { model } = mockChat(() => sseResponse(chunks));
     const got = await collect(model as never);
     const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
-    expect(text).toBe("The answer is 42. because reasons");
+    expect(text).toBe("The answer is 42. <think>because reasons");
   });
 
   it("emits no side-channel chunk for plain content", async () => {
