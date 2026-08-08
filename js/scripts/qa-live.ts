@@ -37,6 +37,8 @@ const ASSETS = {
   video: "https://download.samplelib.com/mp4/sample-5s.mp4",
   csv: "https://r2public.jigsawstack.com/interfaze/examples/prediction-example.csv",
   pdf: "https://arxiv.org/pdf/1706.03762",
+  // Converted to PDF server-side at ingestion, so no client-side handling exists to break.
+  docx: "https://calibre-ebook.com/downloads/demos/demo.docx",
 };
 
 let failures = 0;
@@ -279,6 +281,7 @@ async function inputCheck(label: string, part: Record<string, unknown>, prompt: 
 
 await inputCheck("image url", image(ASSETS.id), "What kind of document is this?");
 await inputCheck("pdf url", filePart(ASSETS.pdf, "paper.pdf"), "Give the title.");
+await inputCheck("docx url", filePart(ASSETS.docx, "demo.docx"), "What is this document about?");
 await inputCheck("audio url", filePart(ASSETS.audio, "stt-example.wav"), "Transcribe this.");
 await inputCheck("video block", { type: "video", url: ASSETS.video }, "Describe this video.");
 await inputCheck("csv url", filePart(ASSETS.csv, "data.csv"), "Name one column header.");

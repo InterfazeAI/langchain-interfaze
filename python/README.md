@@ -157,7 +157,7 @@ res.response_metadata.get("reasoning")
 
 ## Multimodal Inputs
 
-Images, audio, PDFs, and CSV use standard LangChain content parts, by URL or base64:
+Images, audio, PDFs, Word documents (`.docx`), and CSV use standard LangChain content parts, by URL or base64:
 
 ```python
 from langchain_core.messages import HumanMessage

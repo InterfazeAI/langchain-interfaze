@@ -85,3 +85,13 @@ def test_file_id_rejected_in_the_openai_native_nesting() -> None:
     model = ChatInterfaze(api_key="k")
     with pytest.raises(InterfazeError, match="file_id"):
         model.invoke([HumanMessage(content=[{"type": "file", "file": {"file_id": "file-abc"}}])])
+
+
+@respx.mock
+def test_empty_mime_type_falls_through_to_the_default() -> None:
+    route = mock_json(BASIC)
+    ChatInterfaze(api_key="t").invoke(
+        [HumanMessage(content=[{"type": "video", "base64": "AAAA", "mime_type": ""}])]
+    )
+    part = last_body(route)["messages"][-1]["content"][0]
+    assert part["file"] == {"file_data": "data:video/mp4;base64,AAAA", "format": "video/mp4"}

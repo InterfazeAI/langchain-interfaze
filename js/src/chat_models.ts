@@ -4,6 +4,7 @@ import { convertChunksToEvents } from "@langchain/core/language_models/compat";
 import type { ChatModelStreamEvent, FinishReason } from "@langchain/core/language_models/event";
 import { AIMessage, AIMessageChunk, type BaseMessage, isAIMessage } from "@langchain/core/messages";
 import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
+import { concat } from "@langchain/core/utils/stream";
 import { ChatOpenAICompletions, type ChatOpenAIFields, normalizeHeaders } from "@langchain/openai";
 import { INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError } from "interfaze";
 import { SideChannelFilter, stripSideChannels, TAG_RE } from "./side_channels.js";
@@ -70,9 +71,9 @@ function convertVideoBlock(block: VideoBlock): Record<string, unknown> {
   let file: Record<string, unknown>;
   if (block.url != null) {
     file = { file_data: block.url };
-    mime = mime ?? videoMimeFromUrl(block.url);
+    mime = mime || videoMimeFromUrl(block.url);
   } else if (block.base64 != null) {
-    mime = mime ?? "video/mp4";
+    mime = mime || "video/mp4";
     file = { file_data: `data:${mime};base64,${block.base64}` };
   } else {
     throw new InterfazeError("Video content block requires one of 'url' or 'base64'.");
@@ -277,7 +278,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const { apiKey, defaultHeaders, ...rest } = super._identifyingParams();
     return {
       ...rest,
-      ...(typeof apiKey === "string" ? { apiKeyFingerprint: digest(apiKey) } : {}),
+      ...(typeof apiKey === "string" ? { interfazeKey: digest(apiKey) } : {}),
       ...(defaultHeaders ? { interfazeHeaders: redactHeaders(defaultHeaders as Record<string, string>) } : {}),
     } as ReturnType<ChatOpenAICompletions["_identifyingParams"]>;
   }
@@ -444,14 +445,18 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     options: this["ParsedCallOptions"],
     runManager?: CallbackManagerForLLMRun
   ): AsyncGenerator<ChatModelStreamEvent> {
-    const responseMetadata: Record<string, unknown> = {};
+    const generationInfo: Record<string, unknown> = {};
+    let merged: AIMessageChunk | undefined;
     const source = this._streamResponseChunks(messages, options, runManager);
     const observed = (async function* () {
       for await (const gen of source) {
-        Object.assign(responseMetadata, gen.message.response_metadata);
+        const message = gen.message as AIMessageChunk;
+        // concat is what `.stream()` consumers get, so the accumulating side fields
+        // concatenate here too rather than the last one winning.
+        merged = merged ? concat(merged, message) : message;
         for (const key of ["finish_reason", "model_name"] as const) {
           const value = gen.generationInfo?.[key];
-          if (value != null) responseMetadata[key] = value;
+          if (value != null) generationInfo[key] = value;
         }
         yield gen;
       }
@@ -461,6 +466,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
         yield event;
         continue;
       }
+      const responseMetadata = { ...merged?.response_metadata, ...generationInfo };
       const reason = FINISH_REASONS[String(responseMetadata.finish_reason)];
       yield { ...event, ...(reason ? { reason } : {}), responseMetadata };
     }

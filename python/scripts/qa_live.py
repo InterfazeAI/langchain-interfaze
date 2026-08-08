@@ -47,6 +47,8 @@ A = {
     "video": "https://download.samplelib.com/mp4/sample-5s.mp4",
     "csv": "https://r2public.jigsawstack.com/interfaze/examples/prediction-example.csv",
     "pdf": "https://arxiv.org/pdf/1706.03762",
+    # Converted to PDF server-side at ingestion, so no client-side handling exists to break.
+    "docx": "https://calibre-ebook.com/downloads/demos/demo.docx",
     "scene": "https://ultralytics.com/images/bus.jpg",
 }
 failures: list[str] = []
@@ -297,7 +299,7 @@ def rejects_bad_base64() -> str:
 async def _astream_events() -> str:
     fresh = make_llm(bypass_cache=True, reasoning_effort="high")
     body = ""
-    end = None
+    end: Any = None
     async for ev in fresh.astream_events("Why is the sky blue? Briefly.", version="v2"):
         if ev["event"] == "on_chat_model_stream":
             content = ev["data"]["chunk"].content
@@ -376,6 +378,7 @@ check("rejects a video file_id client-side", rejects_video_file_id)
 
 input_check("image url", lambda: image(A["id"]), "What kind of document is this?")
 input_check("pdf url", lambda: file(A["pdf"], "paper.pdf"), "Give the title.")
+input_check("docx url", lambda: file(A["docx"], "demo.docx"), "What is this document about?")
 input_check("audio url", lambda: file(A["audio"], "stt-example.wav"), "Transcribe this.")
 input_check("video block", lambda: {"type": "video", "url": A["video"]}, "Describe this video.")
 input_check("csv url", lambda: file(A["csv"], "data.csv"), "Name one column header.")

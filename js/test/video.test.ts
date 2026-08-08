@@ -35,6 +35,13 @@ describe("video content blocks", () => {
     expect(part).toEqual({ type: "file", file: { file_data: "data:video/mp4;base64,AAAA", format: "video/mp4" } });
   });
 
+  // an empty string is present-but-empty; python's `or` falls through and `??` would not
+  it("falls through an empty mime_type to the default", async () => {
+    const { model, calls } = mockChat(() => jsonResponse(completion()));
+    await model.invoke([new HumanMessage({ content: [{ type: "video", base64: "AAAA", mime_type: "" }] as never })]);
+    expect(lastContent(calls)[0]!.file).toEqual({ file_data: "data:video/mp4;base64,AAAA", format: "video/mp4" });
+  });
+
   it("rejects a file_id video block (interfaze has no file store)", async () => {
     const { model } = mockChat(() => jsonResponse(completion()));
     await expect(model.invoke([new HumanMessage({ content: [{ type: "video", file_id: "file-123" }] as never })])).rejects.toThrow(/file_id/);

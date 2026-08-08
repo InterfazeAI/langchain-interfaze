@@ -89,6 +89,20 @@ describe("identifying params", () => {
   });
 });
 
+describe("v3 metadata merge", () => {
+  it("concatenates accumulating side fields the way .stream() does", async () => {
+    const frames = [
+      chunk({ content: '<precontext>[{"name":"from_inline"}]</precontext>Hi' }),
+      envelopeChunk({ precontext: [{ name: "from_envelope" }] }),
+      chunk({}, "stop"),
+    ];
+    const { model } = mockChat(() => sseResponse(frames));
+    let finish: Record<string, any> | undefined;
+    for await (const ev of model.streamEvents("x")) if (ev.event === "message-finish") finish = ev;
+    expect(finish?.responseMetadata?.precontext).toEqual([{ name: "from_envelope" }, { name: "from_inline" }]);
+  });
+});
+
 describe("stream ordering", () => {
   it("attaches envelope side fields to the chunk they arrived with", async () => {
     const { model } = mockChat(() =>
