@@ -67,9 +67,6 @@ def _strip_tags(message: AIMessage) -> None:
     ):
         return
     text, reasoning, precontext = strip_side_channels(message.content)
-    open_tag = _unterminated_tag(message.content)
-    if open_tag is not None:
-        text = (open_tag[0] + open_tag[1]).strip()
     if text != message.content:
         message.content = text
     if reasoning:

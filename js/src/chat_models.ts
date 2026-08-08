@@ -123,9 +123,7 @@ function stripTags(message: AIMessage): void {
   if (typeof message.content !== "string") return;
   if (!message.content.includes("<think>") && !message.content.includes("<precontext>")) return;
   const { text, reasoning, precontext } = stripSideChannels(message.content);
-  const open = unterminatedTag(message.content);
-  const visible = open ? (open.before + open.after).trim() : text;
-  if (visible !== message.content) message.content = visible;
+  if (text !== message.content) message.content = text;
   if (reasoning && message.response_metadata.reasoning === undefined) {
     message.response_metadata.reasoning = reasoning;
     message.additional_kwargs.reasoning = reasoning as never;

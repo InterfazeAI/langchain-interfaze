@@ -182,10 +182,11 @@ def test_unterminated_tag_recovers_text() -> None:
 
 
 @respx.mock
-def test_unterminated_tag_recovers_text_non_streaming() -> None:
-    mock_json(completion("<think>never closed and the real answer 42"))
+def test_unmatched_tag_survives_non_streaming() -> None:
+    """Non-streaming has the whole body: an unmatched tag is prose, not a side channel."""
+    mock_json(completion("Wrap your reasoning in <think> tags."))
     res = ChatInterfaze(api_key="t").invoke([HumanMessage("x")])
-    assert res.content == "never closed and the real answer 42"
+    assert res.content == "Wrap your reasoning in <think> tags."
 
 
 @respx.mock

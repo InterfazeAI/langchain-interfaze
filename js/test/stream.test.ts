@@ -165,10 +165,11 @@ describe("streaming side-channel filter", () => {
     expect(text).toBe("never closed and the real answer 42");
   });
 
-  it("recovers text from an unterminated tag when not streaming", async () => {
-    const { model } = mockChat(() => jsonResponse(completion("<think>never closed and the real answer 42")));
-    const res = await model.invoke("x");
-    expect(res.content).toBe("never closed and the real answer 42");
+  // Non-streaming has the whole body, so an unmatched tag is prose and must survive
+  // verbatim — stripping it would mangle any answer that mentions the tag name.
+  it("leaves an unmatched tag alone when not streaming", async () => {
+    const { model } = mockChat(() => jsonResponse(completion("Wrap your reasoning in <think> tags.")));
+    expect((await model.invoke("x")).content).toBe("Wrap your reasoning in <think> tags.");
   });
 
   it("does not duplicate the prefix when the tag opens mid-text", async () => {

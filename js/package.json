@@ -57,7 +57,7 @@
   "peerDependencies": {
     "@langchain/core": "^1.2.2",
     "@langchain/openai": "^1.5.5",
-    "interfaze": ">=1.0.2",
+    "interfaze": ">=1.0.3",
     "zod": "^3.23.0 || ^4.4.3"
   },
   "peerDependenciesMeta": {
@@ -71,7 +71,7 @@
     "@langchain/openai": "^1.5.6",
     "@types/node": "~22.20.1",
     "@vitest/coverage-v8": "^2.1.9",
-    "interfaze": "^1.0.2",
+    "interfaze": "^1.0.3",
     "prettier": "^3.9.6",
     "publint": "0.3.22",
     "tsup": "^8.5.1",
