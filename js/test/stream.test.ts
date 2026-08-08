@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { concat } from "@langchain/core/utils/stream";
 import { isAIMessage } from "@langchain/core/messages";
-import { chunk, envelopeChunk, lastBody, mockChat, sseResponse } from "./helpers.js";
+import { chunk, completion, envelopeChunk, jsonResponse, lastBody, mockChat, sseResponse } from "./helpers.js";
 
 async function concatAll(model: { stream: (i: string) => Promise<AsyncIterable<any>> }) {
   let merged: any;
@@ -154,6 +154,29 @@ describe("streaming side-channel filter", () => {
   it("adds no extra chunk to a plain stream", async () => {
     const { model } = mockChat(() => sseResponse([chunk({ content: "hi" }), chunk({}, "stop")]));
     expect(await collect(model as never)).toHaveLength(2);
+  });
+
+  // A truncated response leaves the tag open; the buffered text must not vanish.
+  it("recovers text from an unterminated tag", async () => {
+    const chunks = [chunk({ content: "<think>never closed and the real answer 42" }), chunk({}, "length")];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
+    expect(text).toBe("never closed and the real answer 42");
+  });
+
+  it("recovers text from an unterminated tag when not streaming", async () => {
+    const { model } = mockChat(() => jsonResponse(completion("<think>never closed and the real answer 42")));
+    const res = await model.invoke("x");
+    expect(res.content).toBe("never closed and the real answer 42");
+  });
+
+  it("does not duplicate the prefix when the tag opens mid-text", async () => {
+    const chunks = [chunk({ content: "The answer is 42. <think>because reasons" }), chunk({}, "length")];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
+    expect(text).toBe("The answer is 42. because reasons");
   });
 
   it("emits no side-channel chunk for plain content", async () => {

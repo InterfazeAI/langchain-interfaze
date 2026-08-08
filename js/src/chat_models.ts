@@ -15,7 +15,6 @@ const DEFAULT_TIMEOUT_MS = 900_000;
 const HEADER_SHOW_ADDITIONAL_INFO = "x-show-additional-info";
 const HEADER_BYPASS_MOA = "x-interfaze-bypass-moa";
 const HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache";
-const HEADER_ADMIN_KEY = "x-admin-key";
 
 export type InterfazeReasoningEffort = "minimal" | "low" | "medium" | "high" | "on" | "off" | "auto";
 
@@ -27,8 +26,6 @@ export interface ChatInterfazeFields extends Omit<ChatOpenAIFields, "reasoningEf
   bypassMoA?: boolean;
   /** Skip the semantic cache (`x-interfaze-bypass-cache`). */
   bypassCache?: boolean;
-  /** Admin key that surfaces a `debug` field (`x-admin-key`). */
-  adminKey?: string;
 }
 
 type VideoBlock = {
@@ -105,11 +102,30 @@ function applySideFields(message: SideChannelCarrier, raw: Record<string, unknow
   }
 }
 
+/**
+ * A truncated response leaves a tag open; the filter buffers everything after it and
+ * drops it on flush. `after` is exactly that swallowed remainder — streaming has already
+ * emitted `before`, so re-emitting it would duplicate the prefix.
+ */
+function unterminatedTag(raw: string): { before: string; after: string } | null {
+  const text = stripSideChannels(raw).text;
+  for (const tag of ["<think>", "<precontext>"]) {
+    const start = text.indexOf(tag);
+    if (start === -1 || text.slice(start).includes(`</${tag.slice(1)}`)) continue;
+    // A half-written <precontext> is partial metadata JSON, not answer text — drop it.
+    const after = tag === "<think>" ? text.slice(start + tag.length) : "";
+    return { before: text.slice(0, start), after };
+  }
+  return null;
+}
+
 function stripTags(message: AIMessage): void {
   if (typeof message.content !== "string") return;
   if (!message.content.includes("<think>") && !message.content.includes("<precontext>")) return;
   const { text, reasoning, precontext } = stripSideChannels(message.content);
-  if (text !== message.content) message.content = text;
+  const open = unterminatedTag(message.content);
+  const visible = open ? (open.before + open.after).trim() : text;
+  if (visible !== message.content) message.content = visible;
   if (reasoning && message.response_metadata.reasoning === undefined) {
     message.response_metadata.reasoning = reasoning;
     message.additional_kwargs.reasoning = reasoning as never;
@@ -138,7 +154,6 @@ function buildHeaders(fields: ChatInterfazeFields): Record<string, string> | und
   if (fields.showAdditionalInfo) headers[HEADER_SHOW_ADDITIONAL_INFO] = "true";
   if (fields.bypassMoA) headers[HEADER_BYPASS_MOA] = "true";
   if (fields.bypassCache) headers[HEADER_BYPASS_CACHE] = "true";
-  if (fields.adminKey) headers[HEADER_ADMIN_KEY] = fields.adminKey;
   return Object.keys(headers).length ? headers : undefined;
 }
 
@@ -163,7 +178,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
   readonly interfazeReasoningEffort?: InterfazeReasoningEffort;
 
   constructor(fields: ChatInterfazeFields = {}) {
-    const { apiKey, model, configuration, timeout, showAdditionalInfo, bypassMoA, bypassCache, adminKey, reasoningEffort, ...rest } = fields;
+    const { apiKey, model, configuration, timeout, showAdditionalInfo, bypassMoA, bypassCache, reasoningEffort, ...rest } = fields;
     const key = apiKey ?? process.env.INTERFAZE_API_KEY;
     if (!key) {
       throw new InterfazeError("Missing API key. Pass new ChatInterfaze({ apiKey: ... }) or set the INTERFAZE_API_KEY environment variable.");
@@ -290,8 +305,9 @@ export class ChatInterfaze extends ChatOpenAICompletions {
       }
       yield gen;
     }
-    const tail = filter.flush();
-    const { reasoning, precontext } = stripSideChannels(rawParts.join(""));
+    const joined = rawParts.join("");
+    const tail = filter.flush() || unterminatedTag(joined)?.after.trim() || "";
+    const { reasoning, precontext } = stripSideChannels(joined);
     const emitReasoning = reasoning && !seen.has(fingerprint("reasoning", reasoning));
     const emitPrecontext = precontext && !seen.has(fingerprint("precontext", precontext));
     const leftover = new AIMessageChunk({ content: "" });

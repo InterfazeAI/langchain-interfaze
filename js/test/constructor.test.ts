@@ -48,7 +48,6 @@ describe("ChatInterfaze constructor", () => {
       showAdditionalInfo: true,
       bypassMoA: true,
       bypassCache: true,
-      adminKey: "adm",
       configuration: { defaultHeaders: { "x-custom": "1" } },
     });
     const headers = (model as unknown as { clientConfig: { defaultHeaders?: Record<string, string> } }).clientConfig.defaultHeaders;
@@ -57,7 +56,6 @@ describe("ChatInterfaze constructor", () => {
       "x-show-additional-info": "true",
       "x-interfaze-bypass-moa": "true",
       "x-interfaze-bypass-cache": "true",
-      "x-admin-key": "adm",
     });
   });
 

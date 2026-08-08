@@ -70,7 +70,6 @@ def test_control_headers() -> None:
         show_additional_info=True,
         bypass_moa=True,
         bypass_cache=True,
-        admin_key="adm",
         default_headers={"x-custom": "1"},
     )
     assert model.default_headers == {
@@ -78,7 +77,6 @@ def test_control_headers() -> None:
         "x-show-additional-info": "true",
         "x-interfaze-bypass-moa": "true",
         "x-interfaze-bypass-cache": "true",
-        "x-admin-key": "adm",
     }
 
 

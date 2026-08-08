@@ -32,7 +32,6 @@ _DEFAULT_TIMEOUT = 900.0
 _HEADER_SHOW_ADDITIONAL_INFO = "x-show-additional-info"
 _HEADER_BYPASS_MOA = "x-interfaze-bypass-moa"
 _HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache"
-_HEADER_ADMIN_KEY = "x-admin-key"
 
 _SIDE_FIELDS = ("precontext", "reasoning", "vcache")
 
@@ -68,6 +67,9 @@ def _strip_tags(message: AIMessage) -> None:
     ):
         return
     text, reasoning, precontext = strip_side_channels(message.content)
+    open_tag = _unterminated_tag(message.content)
+    if open_tag is not None:
+        text = (open_tag[0] + open_tag[1]).strip()
     if text != message.content:
         message.content = text
     if reasoning:
@@ -149,9 +151,29 @@ def _filter_stream_chunk(gen: ChatGenerationChunk, filt: SideChannelFilter, raw:
         gen.text = message.content
 
 
+def _unterminated_tag(raw: str) -> tuple[str, str] | None:
+    """A truncated response leaves a tag open; the filter buffers what follows and drops it.
+
+    Returns (before, after). Streaming already emitted `before`, so only `after` was lost.
+    """
+    text = strip_side_channels(raw)[0]
+    for tag in ("<think>", "<precontext>"):
+        start = text.find(tag)
+        if start == -1 or f"</{tag[1:]}" in text[start:]:
+            continue
+        # A half-written <precontext> is partial metadata JSON, not answer text — drop it.
+        after = text[start + len(tag) :] if tag == "<think>" else ""
+        return text[:start], after
+    return None
+
+
 def _final_side_chunk(filt: SideChannelFilter, raw: list[str], seen: set[str]) -> ChatGenerationChunk | None:
     tail = filt.flush()
-    _, reasoning, precontext = strip_side_channels("".join(raw))
+    joined = "".join(raw)
+    _, reasoning, precontext = strip_side_channels(joined)
+    if not tail:
+        open_tag = _unterminated_tag(joined)
+        tail = open_tag[1].strip() if open_tag else ""
     side: dict[str, Any] = {}
     if reasoning and _fingerprint("reasoning", reasoning) not in seen:
         side["reasoning"] = reasoning
@@ -192,7 +214,6 @@ class ChatInterfaze(ChatOpenAI):
         show_additional_info: bool = False,
         bypass_moa: bool = False,
         bypass_cache: bool = False,
-        admin_key: str | None = None,
         default_headers: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -209,8 +230,6 @@ class ChatInterfaze(ChatOpenAI):
             headers[_HEADER_BYPASS_MOA] = "true"
         if bypass_cache:
             headers[_HEADER_BYPASS_CACHE] = "true"
-        if admin_key:
-            headers[_HEADER_ADMIN_KEY] = admin_key
         if "timeout" not in kwargs and "request_timeout" not in kwargs:
             kwargs["timeout"] = _DEFAULT_TIMEOUT
         kwargs.setdefault("stream_usage", True)

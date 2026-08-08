@@ -19,6 +19,8 @@ from tests.unit_tests.conftest import (
     STREAM_CHUNKS,
     THINK_SPLIT,
     chunk,
+    completion,
+    mock_json,
     mock_sse,
 )
 
@@ -163,3 +165,32 @@ def test_streamed_reasoning_not_repeated_by_final_chunk() -> None:
     mock_sse([chunk({"content": "<think>why</think>ok"}) | {"reasoning": "why"}, chunk({}, "stop")])
     out = list(ChatInterfaze(api_key="t").stream([HumanMessage("hi")]))
     assert sum("reasoning" in c.additional_kwargs for c in out) == 1
+
+
+@respx.mock
+def test_unterminated_tag_recovers_text() -> None:
+    """A truncated response must not come back silently empty."""
+    mock_sse(
+        [
+            chunk({"content": "<think>never closed and the real answer 42"}),
+            chunk({}, "length"),
+        ]
+    )
+    chunks = list(ChatInterfaze(api_key="t").stream([HumanMessage("x")]))
+    body = "".join(c.content for c in chunks if isinstance(c.content, str))
+    assert body == "never closed and the real answer 42"
+
+
+@respx.mock
+def test_unterminated_tag_recovers_text_non_streaming() -> None:
+    mock_json(completion("<think>never closed and the real answer 42"))
+    res = ChatInterfaze(api_key="t").invoke([HumanMessage("x")])
+    assert res.content == "never closed and the real answer 42"
+
+
+@respx.mock
+def test_unterminated_tag_mid_text_does_not_duplicate_prefix() -> None:
+    mock_sse([chunk({"content": "The answer is 42. <think>because reasons"}), chunk({}, "length")])
+    chunks = list(ChatInterfaze(api_key="t").stream([HumanMessage("x")]))
+    body = "".join(c.content for c in chunks if isinstance(c.content, str))
+    assert body == "The answer is 42. because reasons"
