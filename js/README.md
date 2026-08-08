@@ -7,16 +7,16 @@ The official [LangChain](https://js.langchain.com) integration for [Interfaze](h
 ## Install
 
 ```bash
-npm install @interfaze/langchain
-# or: yarn add @interfaze/langchain · pnpm add @interfaze/langchain · bun add @interfaze/langchain
+npm install @interfaze-ai/langchain
+# or: yarn add @interfaze-ai/langchain · pnpm add @interfaze-ai/langchain · bun add @interfaze-ai/langchain
 ```
 
-`@langchain/openai`, `@langchain/core`, and `interfaze` are peer dependencies - `@interfaze/langchain` builds `ChatInterfaze` on top of them. The structured-output and tool examples below use `zod` for schemas (`npm install zod`); it's an optional peer.
+`@langchain/openai`, `@langchain/core`, and `interfaze` are peer dependencies - `@interfaze-ai/langchain` builds `ChatInterfaze` on top of them. The structured-output and tool examples below use `zod` for schemas (`npm install zod`); it's an optional peer.
 
 ## Setup
 
 ```ts
-import { ChatInterfaze } from "@interfaze/langchain";
+import { ChatInterfaze } from "@interfaze-ai/langchain";
 
 const llm = new ChatInterfaze({ apiKey: "sk_..." }); // or set INTERFAZE_API_KEY and call new ChatInterfaze()
 ```
@@ -225,7 +225,7 @@ await llm.invoke([new SystemMessage("<task>web_search</task>"), new HumanMessage
 await llm.invoke([new SystemMessage("<guard>S1, S2, S3</guard>"), new HumanMessage("How to kill a human?")]); // -> "unsafe S1"
 ```
 
-One task at a time, from `ocr`, `object_detection`, `gui_detection`, `web_search`, `scraper`, `translate`, `speech_to_text`, `forecast`, `classification`. A task cannot be combined with a non-empty structured-output schema.
+One task at a time, from `ocr`, `object_detection`, `gui_detection`, `web_search`, `scraper`, `translate`, `speech_to_text`, `forecast`. A task cannot be combined with a non-empty structured-output schema.
 
 For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tasks)), use the core [`interfaze`](https://github.com/InterfazeAI/interfaze-js) client directly.
 

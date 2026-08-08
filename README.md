@@ -1,6 +1,6 @@
 # Interfaze LangChain SDK
 
-The official [LangChain](https://www.langchain.com) integration for [Interfaze](https://interfaze.ai), for both **Python** (`langchain-interfaze`) and **TypeScript / JavaScript** (`@interfaze/langchain`).
+The official [LangChain](https://www.langchain.com) integration for [Interfaze](https://interfaze.ai), for both **Python** (`langchain-interfaze`) and **TypeScript / JavaScript** (`@interfaze-ai/langchain`).
 
 [Docs](https://interfaze.ai/docs) · [limits](https://interfaze.ai/docs/limits) · [pricing](https://interfaze.ai/pricing) · [dashboard](https://interfaze.ai) · [Python SDK](https://github.com/InterfazeAI/interfaze-python) · [TypeScript / JavaScript SDK](https://github.com/InterfazeAI/interfaze-js)
 
@@ -17,7 +17,7 @@ pip install langchain-interfaze
 TypeScript / JavaScript:
 
 ```bash
-npm install @interfaze/langchain
+npm install @interfaze-ai/langchain
 ```
 
 The TS structured-output and tool examples use `zod` for schemas (`npm install zod`); it's an optional peer.
@@ -35,7 +35,7 @@ llm = ChatInterfaze(api_key="sk_...")  # or set INTERFAZE_API_KEY and call ChatI
 TypeScript:
 
 ```ts
-import { ChatInterfaze } from "@interfaze/langchain";
+import { ChatInterfaze } from "@interfaze-ai/langchain";
 
 const llm = new ChatInterfaze({ apiKey: "sk_..." }); // or set INTERFAZE_API_KEY and call new ChatInterfaze()
 ```
@@ -445,7 +445,7 @@ await llm.invoke([new SystemMessage("<task>web_search</task>"), new HumanMessage
 await llm.invoke([new SystemMessage("<guard>S1, S2, S3</guard>"), new HumanMessage("How to kill a human?")]); // -> "unsafe S1"
 ```
 
-One task at a time, from `ocr`, `object_detection`, `gui_detection`, `web_search`, `scraper`, `translate`, `speech_to_text`, `forecast`, `classification`. A task cannot be combined with a non-empty structured-output schema.
+One task at a time, from `ocr`, `object_detection`, `gui_detection`, `web_search`, `scraper`, `translate`, `speech_to_text`, `forecast`. A task cannot be combined with a non-empty structured-output schema.
 
 For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tasks)), use the core `interfaze` client directly ([Python](https://github.com/InterfazeAI/interfaze-python) · [TypeScript / JavaScript](https://github.com/InterfazeAI/interfaze-js)).
 

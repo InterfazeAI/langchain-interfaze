@@ -64,6 +64,7 @@ jobs:
   npm-publish:
     name: Publish to npm
     runs-on: ubuntu-latest
+    if: github.event.release.prerelease == false
     permissions:
       contents: read
       id-token: write
@@ -84,6 +85,7 @@ jobs:
   jsr-publish:
     name: Publish to JSR
     runs-on: ubuntu-latest
+    if: github.event.release.prerelease == false
     permissions:
       contents: read
       id-token: write

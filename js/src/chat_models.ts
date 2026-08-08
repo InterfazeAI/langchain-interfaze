@@ -192,7 +192,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     });
     this.lc_serializable = false;
     this.interfazeReasoningEffort = reasoningEffort;
-    this._addVersion("@interfaze/langchain", VERSION);
+    this._addVersion("@interfaze-ai/langchain", VERSION);
   }
 
   override getLsParams(options: this["ParsedCallOptions"]): LangSmithParams {

@@ -1,5 +1,5 @@
 {
-  "name": "@interfaze/langchain",
+  "name": "@interfaze-ai/langchain",
   "version": "1.0.0",
   "description": "Interfaze LangChain integration for TypeScript/JavaScript",
   "license": "MIT",

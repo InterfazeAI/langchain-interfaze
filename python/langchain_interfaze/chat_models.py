@@ -246,6 +246,14 @@ class ChatInterfaze(ChatOpenAI):
         self._add_version("langchain-interfaze", __version__)
         return self
 
+    @property
+    def _identifying_params(self) -> dict[str, Any]:
+        # Without these, set_llm_cache serves a bypass_cache model the plain model's answer.
+        params = {**super()._identifying_params, "_type": self._llm_type}
+        if self.default_headers:
+            params["interfaze_headers"] = sorted(self.default_headers)
+        return params
+
     def _get_ls_params(self, stop: list[str] | None = None, **kwargs: Any) -> Any:
         params = super()._get_ls_params(stop=stop, **kwargs)
         params["ls_provider"] = _PROVIDER
