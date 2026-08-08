@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { completion, jsonResponse, mockChat } from "./helpers.js";
 
 const PC = [{ name: "ocr", result: { extracted_text: "x" } }];
@@ -24,6 +24,12 @@ describe("non-streaming side fields", () => {
     expect("reasoning" in res.response_metadata).toBe(false);
     expect(res.response_metadata.vcache).toBe(false);
     expect("__raw_response" in res.additional_kwargs).toBe(false);
+  });
+
+  it("keeps generation.text in step with the stripped content", async () => {
+    const { model } = mockChat(() => jsonResponse(completion("<think>SECRET</think>The answer is 42")));
+    const res = await model.generate([[new HumanMessage("x")]]);
+    expect(res.generations[0]![0]!.text).toBe("The answer is 42");
   });
 
   it("strips inline <think>/<precontext> tags from content", async () => {

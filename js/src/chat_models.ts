@@ -81,8 +81,7 @@ type SideChannelCarrier = {
   additional_kwargs: Record<string, unknown>;
 };
 
-const carriesValue = (value: unknown): boolean =>
-  value !== undefined && value !== null && value !== "" && !(Array.isArray(value) && value.length === 0);
+const carriesValue = (value: unknown): boolean => value !== undefined && value !== null && value !== "";
 
 const ACCUMULATING_SIDE_FIELDS: readonly string[] = ["precontext", "reasoning"];
 
@@ -90,15 +89,21 @@ const ACCUMULATING_SIDE_FIELDS: readonly string[] = ["precontext", "reasoning"];
 // scalar state and dedupes by name — merging two values would concatenate them.
 const fingerprint = (key: string, value: unknown): string => (ACCUMULATING_SIDE_FIELDS.includes(key) ? `${key}:${JSON.stringify(value)}` : key);
 
-function applySideFields(message: SideChannelCarrier, raw: Record<string, unknown>, seen?: Set<string>): void {
+function applySideFields(message: SideChannelCarrier, raw: Record<string, unknown>, seen?: Set<string>, accumulate = false): void {
   for (const key of SIDE_FIELDS) {
     const value = raw[key];
     if (!carriesValue(value)) continue;
     const fp = fingerprint(key, value);
     if (seen?.has(fp)) continue;
     seen?.add(fp);
-    message.response_metadata[key] = value;
-    message.additional_kwargs[key] = value as never;
+    const prev = message.response_metadata[key];
+    let next: unknown = value;
+    if (accumulate && prev !== undefined) {
+      if (Array.isArray(prev) && Array.isArray(value)) next = [...prev, ...value];
+      else if (typeof prev === "string" && typeof value === "string") next = prev + value;
+    }
+    message.response_metadata[key] = next;
+    message.additional_kwargs[key] = next as never;
   }
 }
 
@@ -265,6 +270,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
         if (raw) applySideFields(message, raw);
         delete message.additional_kwargs.__raw_response;
         stripTags(message);
+        if (typeof message.content === "string") generation.text = message.content;
       }
     }
     return result;
@@ -301,16 +307,14 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const joined = rawParts.join("");
     const tail = filter.flush() || missingTail(joined, emittedParts.join(""));
     const { reasoning, precontext } = stripSideChannels(joined);
+    const leftover = new AIMessageChunk({ content: "" });
+    for (const frame of frames) applySideFields(leftover, frame, seen, true);
     const emitReasoning = reasoning && !seen.has(fingerprint("reasoning", reasoning));
     const emitPrecontext = precontext && !seen.has(fingerprint("precontext", precontext));
-    const leftover = new AIMessageChunk({ content: "" });
-    for (const frame of frames) applySideFields(leftover, frame, seen);
     const hasLeftover = Object.keys(leftover.additional_kwargs).length > 0;
     if (!tail && !emitReasoning && !emitPrecontext && !hasLeftover) return;
     const finalMessage = new AIMessageChunk({ content: tail });
     finalMessage.response_metadata.model_provider = PROVIDER;
-    Object.assign(finalMessage.response_metadata, leftover.response_metadata);
-    Object.assign(finalMessage.additional_kwargs, leftover.additional_kwargs);
     if (emitReasoning) {
       finalMessage.response_metadata.reasoning = reasoning;
       finalMessage.additional_kwargs.reasoning = reasoning;
@@ -319,6 +323,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
       finalMessage.response_metadata.precontext = precontext;
       finalMessage.additional_kwargs.precontext = precontext as never;
     }
+    applySideFields(finalMessage, leftover.response_metadata, undefined, true);
     const finalChunk = new ChatGenerationChunk({ message: finalMessage, text: tail });
     yield finalChunk;
     await runManager?.handleLLMNewToken(tail, { prompt: 0, completion: 0 }, undefined, undefined, undefined, {

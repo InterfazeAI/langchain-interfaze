@@ -48,15 +48,21 @@ _VIDEO_MIME: dict[str, str] = {
 
 
 def _carries_value(value: Any) -> bool:
-    return value is not None and value != "" and value != []
+    return value is not None and value != ""
 
 
 def _extract_side_fields(data: dict[str, Any]) -> dict[str, Any]:
     return {k: data[k] for k in _SIDE_FIELDS if _carries_value(data.get(k))}
 
 
-def _apply_side_fields(message: AIMessage, side: dict[str, Any]) -> None:
+def _apply_side_fields(message: AIMessage, side: dict[str, Any], accumulate: bool = False) -> None:
     for key, value in side.items():
+        prev = message.response_metadata.get(key)
+        if accumulate and prev is not None:
+            if isinstance(prev, list) and isinstance(value, list):
+                value = [*prev, *value]
+            elif isinstance(prev, str) and isinstance(value, str):
+                value = prev + value
         message.response_metadata[key] = value
         message.additional_kwargs[key] = value
 
@@ -69,12 +75,12 @@ def _strip_tags(message: AIMessage) -> None:
     text, reasoning, precontext = strip_side_channels(message.content)
     if text != message.content:
         message.content = text
-    if reasoning:
-        message.response_metadata.setdefault("reasoning", reasoning)
-        message.additional_kwargs.setdefault("reasoning", reasoning)
-    if precontext:
-        message.response_metadata.setdefault("precontext", precontext)
-        message.additional_kwargs.setdefault("precontext", precontext)
+    if reasoning and not message.response_metadata.get("reasoning"):
+        message.response_metadata["reasoning"] = reasoning
+        message.additional_kwargs["reasoning"] = reasoning
+    if precontext and not message.response_metadata.get("precontext"):
+        message.response_metadata["precontext"] = precontext
+        message.additional_kwargs["precontext"] = precontext
 
 
 def _video_mime_from_url(url: str) -> str | None:
@@ -289,6 +295,10 @@ class ChatInterfaze(ChatOpenAI):
                 message.response_metadata["model_provider"] = _PROVIDER
                 _apply_side_fields(message, side)
                 _strip_tags(message)
+                # The streaming path keeps gen.text in step with the stripped content;
+                # without this, callbacks and the serialized cache carry the raw tags.
+                if isinstance(message.content, str):
+                    generation.text = message.content
         return result
 
     def _convert_chunk_to_generation_chunk(

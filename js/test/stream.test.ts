@@ -181,6 +181,37 @@ describe("streaming side-channel filter", () => {
     expect(text).toBe("The answer is 42. <think>because reasons");
   });
 
+  it("keeps an envelope side field alongside the inline one", async () => {
+    const chunks = [
+      chunk({ content: "<think>INLINE</think>Hi" }),
+      chunk({}, "stop"),
+      envelopeChunk({ reasoning: "ENVELOPE", usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
+    ];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const merged = await concatAll(model as never);
+    expect(String(merged.additional_kwargs.reasoning)).toContain("ENVELOPE");
+    expect(String(merged.additional_kwargs.reasoning)).toContain("INLINE");
+  });
+
+  it("keeps every distinct choice-less envelope frame", async () => {
+    const chunks = [
+      envelopeChunk({ precontext: [{ name: "ocr" }] }),
+      chunk({ content: "hi" }),
+      envelopeChunk({ precontext: [{ name: "web_search" }] }),
+      chunk({}, "stop"),
+    ];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const merged = await concatAll(model as never);
+    expect(((merged.additional_kwargs.precontext as Array<{ name: string }>) ?? []).map((p) => p.name)).toEqual(["ocr", "web_search"]);
+  });
+
+  it("surfaces an empty precontext array rather than dropping the key", async () => {
+    const chunks = [chunk({ content: "hi" }, "stop"), envelopeChunk({ precontext: [], vcache: false })];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const merged = await concatAll(model as never);
+    expect(merged.additional_kwargs).toHaveProperty("precontext");
+  });
+
   it("emits no side-channel chunk for plain content", async () => {
     const chunks = [chunk({ content: "Hello " }), chunk({ content: "world" }), chunk({}, "stop")];
     const { model } = mockChat(() => sseResponse(chunks));

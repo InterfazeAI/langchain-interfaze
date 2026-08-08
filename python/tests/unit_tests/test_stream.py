@@ -196,3 +196,41 @@ def test_unterminated_tag_mid_text_does_not_duplicate_prefix() -> None:
     chunks = list(ChatInterfaze(api_key="t").stream([HumanMessage("x")]))
     body = "".join(c.content for c in chunks if isinstance(c.content, str))
     assert body == "The answer is 42. <think>because reasons"
+
+
+@respx.mock
+def test_envelope_side_field_kept_alongside_inline() -> None:
+    mock_sse(
+        [
+            chunk({"content": "<think>INLINE</think>Hi"}),
+            chunk({}, "stop"),
+            {
+                "id": "req-test",
+                "object": "chat.completion.chunk",
+                "created": 1_700_000_000,
+                "model": "interfaze-beta",
+                "choices": [],
+                "reasoning": "ENVELOPE",
+            },
+        ]
+    )
+    merged = None
+    for c in ChatInterfaze(api_key="t").stream([HumanMessage("x")]):
+        merged = c if merged is None else merged + c
+    assert merged is not None
+    assert "ENVELOPE" in str(merged.additional_kwargs["reasoning"])
+    assert "INLINE" in str(merged.additional_kwargs["reasoning"])
+
+
+@respx.mock
+def test_empty_precontext_still_surfaces() -> None:
+    mock_json(completion("hi", precontext=[]))
+    md = ChatInterfaze(api_key="t").invoke([HumanMessage("x")]).response_metadata
+    assert md["precontext"] == []
+
+
+@respx.mock
+def test_generation_text_matches_stripped_content() -> None:
+    mock_json(completion("<think>SECRET</think>The answer is 42"))
+    res = ChatInterfaze(api_key="t").generate([[HumanMessage("x")]])
+    assert res.generations[0][0].text == "The answer is 42"
