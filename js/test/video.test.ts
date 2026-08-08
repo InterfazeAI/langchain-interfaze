@@ -60,6 +60,11 @@ describe("video content blocks", () => {
     expect(lastContent(calls)[0]!.file).toEqual({ file_data: VIDEO_URL, format: "video/mp4" });
   });
 
+  it("rejects a file_id on a non-video block too (no file store)", async () => {
+    const { model } = mockChat(() => jsonResponse(completion()));
+    await expect(model.invoke([new HumanMessage({ content: [{ type: "file", file_id: "file-123" }] as never })])).rejects.toThrow(/file_id/);
+  });
+
   it("throws when a video block has no source", async () => {
     const { model } = mockChat(() => jsonResponse(completion()));
     await expect(model.invoke([new HumanMessage({ content: [{ type: "video" }] as never })])).rejects.toThrow(InterfazeError);

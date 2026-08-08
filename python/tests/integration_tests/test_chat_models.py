@@ -94,7 +94,8 @@ class TestChatInterfazeIntegration(ChatModelIntegrationTests):
 
     @pytest.mark.xfail(
         reason="Interfaze drops `tool_choice` and routes tool use itself, so a user tool "
-        "the model can answer without (here: the weather) is not reliably called."
+        "the model can answer without (here: the weather) is not reliably called.",
+        strict=False,
     )
     def test_agent_loop(self, model: BaseChatModel) -> None:
         super().test_agent_loop(model)

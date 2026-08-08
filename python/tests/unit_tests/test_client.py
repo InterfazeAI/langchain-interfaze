@@ -122,3 +122,14 @@ def test_reasoning_effort_precedence(
     """Same ladder as the JS package: a per-call value always beats a model-level one."""
     model = ChatInterfaze(api_key="k", **model_kwargs)
     assert model._get_request_payload([HumanMessage("x")], **call_kwargs)["reasoning_effort"] == expected
+
+
+def test_cache_key_does_not_publish_header_values() -> None:
+    model = ChatInterfaze(api_key="k", default_headers={"x-tenant": "secret-tenant"})
+    assert "secret-tenant" not in str(model._identifying_params)
+    assert "secret-tenant" not in model._get_llm_string()
+
+
+def test_cache_key_shows_the_flags_we_own() -> None:
+    model = ChatInterfaze(api_key="k", bypass_cache=True)
+    assert model._identifying_params["interfaze_headers"] == ["x-interfaze-bypass-cache=true"]

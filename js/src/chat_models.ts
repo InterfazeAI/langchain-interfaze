@@ -113,26 +113,45 @@ function applySideFields(message: SideChannelCarrier, raw: Record<string, unknow
   }
 }
 
+/** Closed blocks removed, no trim — `stripSideChannels` trims and breaks prefix compares. */
+function withoutClosedBlocks(raw: string): string {
+  return raw.replace(TAG_RE("think"), "").replace(TAG_RE("precontext"), "");
+}
+
 /**
- * `stripSideChannels` trims, which breaks a prefix comparison against streamed text
- * (`</think>\n...` is the common shape). Same removal, no trim.
+ * An unmatched tag means two different things. In a completed response it is prose the
+ * model wrote (`"wrap it in <think> tags"`); in a truncated one it is a side channel the
+ * server never got to close. `finish_reason: "length"` is the only reliable signal.
  */
-function visibleText(raw: string): string {
-  const text = raw.replace(TAG_RE("think"), "").replace(TAG_RE("precontext"), "");
-  const open = text.indexOf("<precontext>");
-  return open === -1 ? text : text.slice(0, open);
+function openSideChannel(text: string): { tag: "think" | "precontext"; before: string; after: string } | null {
+  for (const tag of ["think", "precontext"] as const) {
+    const at = text.indexOf(`<${tag}>`);
+    if (at !== -1) return { tag, before: text.slice(0, at), after: text.slice(at + tag.length + 2) };
+  }
+  return null;
 }
 
-/** The authoritative transcript minus what already streamed. */
-function missingTail(raw: string, emitted: string): string {
-  const text = visibleText(raw);
-  return text.startsWith(emitted) ? text.slice(emitted.length) : "";
+/**
+ * What the caller still owes, given what already streamed. On a truncated response the
+ * partial `<think>` becomes reasoning rather than content, and a partial `<precontext>`
+ * — unparseable tool JSON — is dropped outright.
+ */
+function recoverTail(raw: string, emitted: string, truncated: boolean): { tail: string; reasoning?: string } {
+  const text = withoutClosedBlocks(raw);
+  const open = truncated ? openSideChannel(text) : null;
+  const visible = open ? open.before : text;
+  const tail = visible.startsWith(emitted) ? visible.slice(emitted.length) : "";
+  return open?.tag === "think" && open.after ? { tail, reasoning: open.after } : { tail };
 }
 
-function stripTags(message: AIMessage): void {
+function stripTags(message: AIMessage, truncated = false): void {
   if (typeof message.content !== "string") return;
   if (!message.content.includes("<think>") && !message.content.includes("<precontext>")) return;
-  const { text, reasoning, precontext } = stripSideChannels(message.content);
+  const stripped = stripSideChannels(message.content);
+  const recovered = truncated ? recoverTail(message.content, "", true) : null;
+  const text = recovered ? recovered.tail.trim() : stripped.text;
+  const reasoning = stripped.reasoning ?? recovered?.reasoning;
+  const { precontext } = stripped;
   if (text !== message.content) message.content = text;
   if (reasoning && !hasValue(message.response_metadata.reasoning)) {
     message.response_metadata.reasoning = reasoning;
@@ -148,20 +167,47 @@ function rewriteContent(content: unknown): unknown {
   if (!Array.isArray(content)) return content;
   let changed = false;
   const out = content.map((block) => {
-    if (block && typeof block === "object" && (block as { type?: string }).type === "video") {
+    if (!block || typeof block !== "object") return block;
+    if ((block as { type?: string }).type === "video") {
       changed = true;
       return convertVideoBlock(block as VideoBlock);
+    }
+    // Interfaze has no file store, so a file_id reference can only 400 downstream.
+    if ((block as { file_id?: unknown }).file_id != null) {
+      throw new InterfazeError("Interfaze cannot resolve content by 'file_id'. Pass 'url' or 'base64' instead.");
     }
     return block;
   });
   return changed ? out : content;
 }
 
+const PUBLIC_HEADERS: readonly string[] = [HEADER_SHOW_ADDITIONAL_INFO, HEADER_BYPASS_MOA, HEADER_BYPASS_CACHE];
+
+/** FNV-1a: no sync hash is available in every runtime this package runs in, and only
+ *  distinctness matters here — the digest is never compared across processes. */
+const digest = (value: string): string => {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) hash = Math.imul(hash ^ value.charCodeAt(i), 0x01000193);
+  return (hash >>> 0).toString(16);
+};
+
+const redactHeaders = (headers: Record<string, string>): string[] =>
+  Object.keys(headers)
+    .sort()
+    .map((key) => (PUBLIC_HEADERS.includes(key) ? `${key}=${headers[key]}` : `${key}#${digest(String(headers[key]))}`));
+
 function buildHeaders(fields: ChatInterfazeFields): Record<string, string> | undefined {
   // defaultHeaders is HeadersLike: spreading a Headers instance yields {} and a tuple
   // array yields {"0": [k, v]}. normalizeHeaders also lowercases, so a differently-cased
   // caller header is replaced rather than concatenated onto ours.
-  const headers = normalizeHeaders(fields.configuration?.defaultHeaders) as Record<string, string>;
+  const given = fields.configuration?.defaultHeaders;
+  const headers = normalizeHeaders(given) as Record<string, string>;
+  // normalizeHeaders keeps string values only, so `{"x-flag": true}` would vanish silently.
+  if (given && typeof given === "object" && !Array.isArray(given) && !(given instanceof Headers)) {
+    for (const [key, value] of Object.entries(given)) {
+      if (typeof value === "number" || typeof value === "boolean") headers[key.toLowerCase()] = String(value);
+    }
+  }
   if (fields.showAdditionalInfo) headers[HEADER_SHOW_ADDITIONAL_INFO] = "true";
   if (fields.bypassMoA) headers[HEADER_BYPASS_MOA] = "true";
   if (fields.bypassCache) headers[HEADER_BYPASS_CACHE] = "true";
@@ -210,6 +256,18 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     this.lc_serializable = false;
     this.interfazeReasoningEffort = reasoningEffort;
     this._addVersion("@interfaze-ai/langchain", VERSION);
+  }
+
+  // The parent spreads clientConfig wholesale, so the api key and every default header
+  // land verbatim in the llm cache key. Fingerprint them instead: two values still
+  // differ, which is all the key needs, and neither is published.
+  override _identifyingParams(): ReturnType<ChatOpenAICompletions["_identifyingParams"]> {
+    const { apiKey, defaultHeaders, ...rest } = super._identifyingParams();
+    return {
+      ...rest,
+      ...(typeof apiKey === "string" ? { apiKeyFingerprint: digest(apiKey) } : {}),
+      ...(defaultHeaders ? { interfazeHeaders: redactHeaders(defaultHeaders as Record<string, string>) } : {}),
+    } as ReturnType<ChatOpenAICompletions["_identifyingParams"]>;
   }
 
   override getLsParams(options: this["ParsedCallOptions"]): LangSmithParams {
@@ -284,7 +342,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
         const raw = message.additional_kwargs.__raw_response as Record<string, unknown> | undefined;
         if (raw) applySideFields(message, raw);
         delete message.additional_kwargs.__raw_response;
-        stripTags(message);
+        stripTags(message, generation.generationInfo?.finish_reason === "length");
         if (typeof message.content === "string") generation.text = message.content;
       }
     }
@@ -303,13 +361,19 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const frames: Array<Record<string, unknown>> = [];
     this.#frameSinks.set(options, frames);
     let streamId: string | undefined;
+    let finishReason: unknown;
     for await (const gen of super._streamResponseChunks(this.rewriteVideoBlocks(messages), options, runManager)) {
       const message = gen.message as unknown as SideChannelCarrier;
       streamId ??= (gen.message as AIMessageChunk).id;
+      finishReason = gen.generationInfo?.finish_reason ?? finishReason;
       message.response_metadata.model_provider = PROVIDER;
       const raw = message.additional_kwargs.__raw_response as Record<string, unknown> | undefined;
       if (raw) applySideFields(message, raw, seen);
       delete message.additional_kwargs.__raw_response;
+      // Envelope frames arrive interleaved with content, so apply them here rather than
+      // at stream end: same ordering as python, and a consumer that breaks early still
+      // sees everything the server had already sent.
+      for (const frame of frames.splice(0)) applySideFields(message, frame, seen);
       if (typeof message.content === "string" && message.content) {
         rawParts.push(message.content);
         const filtered = filter.feed(message.content);
@@ -323,8 +387,11 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     }
     const joined = rawParts.join("");
     this.#frameSinks.delete(options);
-    const tail = filter.flush() || missingTail(joined, emittedParts.join(""));
-    const { reasoning, precontext } = stripSideChannels(joined);
+    const flushed = filter.flush();
+    const recovered = flushed ? { tail: flushed } : recoverTail(joined, emittedParts.join(""), finishReason === "length");
+    const tail = recovered.tail;
+    const { precontext } = stripSideChannels(joined);
+    const reasoning = stripSideChannels(joined).reasoning ?? recovered.reasoning;
     if (tail) {
       const message = new AIMessageChunk({ content: tail, id: streamId });
       message.response_metadata.model_provider = PROVIDER;
@@ -337,7 +404,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     if (precontext) inline.precontext = precontext;
     // One chunk per source, so langchain's own merge concatenates them — the same
     // behaviour the python package gets for free from its per-chunk conversion.
-    for (const side of [...frames, inline]) {
+    for (const side of [...frames.splice(0), inline]) {
       const message = new AIMessageChunk({ content: "", id: streamId });
       applySideFields(message, side, seen);
       if (Object.keys(message.additional_kwargs).length === 0) continue;

@@ -10,7 +10,8 @@ from langchain_core.callbacks import (
     BaseCallbackHandler,
     CallbackManager,
 )
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessageChunk, HumanMessage
+from pydantic import BaseModel
 
 from langchain_interfaze import ChatInterfaze
 from tests.unit_tests.conftest import (
@@ -178,8 +179,10 @@ def test_unterminated_tag_recovers_text() -> None:
     )
     chunks = list(ChatInterfaze(api_key="t").stream([HumanMessage("x")]))
     body = "".join(c.content for c in chunks if isinstance(c.content, str))
-    # Matches the SDK: an unmatched tag survives verbatim rather than being swallowed.
-    assert body == "<think>never closed and the real answer 42"
+    # Truncated mid-<think>: the partial reasoning is metadata, not the answer.
+    assert body == ""
+    reasoning = [c.additional_kwargs["reasoning"] for c in chunks if c.additional_kwargs.get("reasoning")]
+    assert reasoning == ["never closed and the real answer 42"]
 
 
 @respx.mock
@@ -195,7 +198,9 @@ def test_unterminated_tag_mid_text_does_not_duplicate_prefix() -> None:
     mock_sse([chunk({"content": "The answer is 42. <think>because reasons"}), chunk({}, "length")])
     chunks = list(ChatInterfaze(api_key="t").stream([HumanMessage("x")]))
     body = "".join(c.content for c in chunks if isinstance(c.content, str))
-    assert body == "The answer is 42. <think>because reasons"
+    assert body == "The answer is 42. "
+    reasoning = [c.additional_kwargs["reasoning"] for c in chunks if c.additional_kwargs.get("reasoning")]
+    assert reasoning == ["because reasons"]
 
 
 @respx.mock
@@ -249,8 +254,8 @@ def test_tail_recovered_when_visible_text_starts_with_whitespace() -> None:
         for c in ChatInterfaze(api_key="t").stream([HumanMessage("x")])
         if isinstance(c.content, str)
     )
-    # the tail is recovered, but a half-written <precontext> is metadata and is cut
-    assert body == "\nThe sky is blue because "
+    # the response completed, so an unmatched tag is prose and survives
+    assert body == "\nThe sky is blue because <precontext>"
 
 
 @respx.mock
@@ -277,3 +282,64 @@ def test_truncated_precontext_is_not_shown_as_content() -> None:
     assert "precontext" not in body
     assert "123-45-6789" not in body
     assert body == "Total is "
+
+
+@respx.mock
+def test_invoke_truncated_precontext_is_not_content() -> None:
+    """The truncation rule applies to invoke(), not just streaming."""
+    mock_json(completion('Total is <precontext>[{"ssn":"123-45-6789"', finish_reason="length"))
+    res = ChatInterfaze(api_key="t").invoke([HumanMessage("x")])
+    assert "123-45-6789" not in str(res.content)
+
+
+@respx.mock
+def test_invoke_truncated_think_becomes_reasoning() -> None:
+    mock_json(completion("<think>SSN 123-45-6789 so", finish_reason="length"))
+    res = ChatInterfaze(api_key="t").invoke([HumanMessage("x")])
+    assert "123-45-6789" not in str(res.content)
+    assert "123-45-6789" in str(res.response_metadata["reasoning"])
+
+
+@respx.mock
+def test_completed_response_keeps_prose_that_mentions_a_tag() -> None:
+    """An unmatched tag in a finished response is prose, not a side channel."""
+    mock_json(completion("Wrap metadata in <precontext> tags, then continue."))
+    res = ChatInterfaze(api_key="t").invoke([HumanMessage("x")])
+    assert res.content == "Wrap metadata in <precontext> tags, then continue."
+
+
+@respx.mock
+def test_final_side_chunk_stamps_model_provider() -> None:
+    mock_sse(THINK_SPLIT)
+    chunks = list(ChatInterfaze(api_key="t").stream([HumanMessage("x")]))
+    # core appends its own empty chunk_position="last" sentinel; every chunk we emit is stamped
+    ours = [c for c in chunks if c.chunk_position != "last"]
+    assert {c.response_metadata.get("model_provider") for c in ours} == {"interfaze"}
+
+
+@respx.mock
+def test_structured_output_streams_and_keeps_side_fields() -> None:
+    """with_structured_output streams through beta.chat.completions, which nests every
+    frame under "chunk" and omits `role` on the completion it assembles."""
+
+    class Ans(BaseModel):
+        answer: str
+
+    # conftest's chunk() omits `role`, exactly as interfaze does after the first delta
+    frames = [chunk({"content": '{"answer":'}), chunk({"content": '"blue"}'}), chunk({}, "stop")]
+    frames[-1]["precontext"] = [{"name": "ocr", "output": "x"}]
+    mock_sse(frames)
+    model = ChatInterfaze(api_key="t").with_structured_output(Ans, include_raw=True)
+    out = [c for c in model.stream([HumanMessage("x")])]
+    assert any(c.get("parsed") == Ans(answer="blue") for c in out)
+    raw = next(c["raw"] for c in out if c.get("raw"))
+    assert raw.additional_kwargs["precontext"] == [{"name": "ocr", "output": "x"}]
+
+
+@respx.mock
+def test_roleless_deltas_still_produce_ai_message_chunks() -> None:
+    frames = [chunk({"content": "hi"}), chunk({}, "stop")]
+    mock_sse(frames)
+    chunks = list(ChatInterfaze(api_key="t").stream([HumanMessage("x")]))
+    assert all(isinstance(c, AIMessageChunk) for c in chunks)
+    assert "".join(c.content for c in chunks) == "hi"  # ty:ignore[no-matching-overload]

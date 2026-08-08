@@ -66,3 +66,14 @@ def test_video_block_missing_source_raises() -> None:
     model = ChatInterfaze(api_key="t")
     with pytest.raises(InterfazeError, match="requires one of"):
         model.invoke([HumanMessage(content=[{"type": "video"}])])
+
+
+def test_file_id_rejected_on_any_block() -> None:
+    model = ChatInterfaze(api_key="k")
+    with pytest.raises(InterfazeError, match="file_id"):
+        model.invoke([HumanMessage(content=[{"type": "file", "file_id": "file-123"}])])
+
+
+def test_scalar_header_values_are_stringified() -> None:
+    model = ChatInterfaze(api_key="k", default_headers={"X-Retries": 3})  # ty:ignore[invalid-argument-type]
+    assert model.default_headers == {"x-retries": "3"}

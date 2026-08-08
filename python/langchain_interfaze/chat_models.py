@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from typing import Any
 
 from interfaze import (
@@ -56,18 +57,50 @@ def _extract_side_fields(data: dict[str, Any]) -> dict[str, Any]:
     return {k: data[k] for k in _SIDE_FIELDS if _carries_value(data.get(k))}
 
 
+def _default_role(response: Any, field: str) -> None:
+    """Interfaze sends `role` on the first delta only, and omits it entirely on the
+    completion the beta stream assembles. The parent then builds a ChatMessage, which
+    pydantic rejects for role=None and which carries no additional_kwargs.
+    interfaze-python normalizes the same way (_stream.py). Handles both the dict and
+    the pydantic shape, since the two paths hand us different ones."""
+    choices = response.get("choices") if isinstance(response, dict) else getattr(response, "choices", None)
+    for choice in choices or ():
+        part = choice.get(field) if isinstance(choice, dict) else getattr(choice, field, None)
+        if isinstance(part, dict):
+            if not part.get("role"):
+                part["role"] = "assistant"
+        elif part is not None and not getattr(part, "role", None):
+            part.role = "assistant"
+
+
+def _redact_headers(headers: Mapping[str, str]) -> list[str]:
+    """`_identifying_params` reaches both the LLM cache key and the `invocation_params`
+    LangSmith records, so a caller's header value is fingerprinted rather than published.
+    Two values still differ, which is all the cache key needs. The flags we own are ours
+    to show."""
+    public = (_HEADER_SHOW_ADDITIONAL_INFO, _HEADER_BYPASS_MOA, _HEADER_BYPASS_CACHE)
+    return [
+        f"{k}={headers[k]}" if k in public else f"{k}#{hashlib.sha256(headers[k].encode()).hexdigest()[:12]}"
+        for k in sorted(headers)
+    ]
+
+
 def _apply_side_fields(message: AIMessage, side: dict[str, Any]) -> None:
     for key, value in side.items():
         message.response_metadata[key] = value
         message.additional_kwargs[key] = value
 
 
-def _strip_tags(message: AIMessage) -> None:
+def _strip_tags(message: AIMessage, truncated: bool = False) -> None:
     if not isinstance(message.content, str) or not (
         "<think>" in message.content or "<precontext>" in message.content
     ):
         return
     text, reasoning, precontext = strip_side_channels(message.content)
+    if truncated:
+        recovered, partial = _recover_tail(message.content, "", truncated=True)
+        text = recovered.strip()
+        reasoning = reasoning or partial
     if text != message.content:
         message.content = text
     if reasoning and not message.response_metadata.get("reasoning"):
@@ -107,10 +140,19 @@ def _convert_video_block(block: dict[str, Any]) -> dict[str, Any]:
 def _rewrite_video_blocks(content: Any) -> Any:
     if not isinstance(content, list):
         return content
-    rewritten = [
-        _convert_video_block(block) if isinstance(block, dict) and block.get("type") == "video" else block
-        for block in content
-    ]
+    rewritten = []
+    for block in content:
+        if not isinstance(block, dict):
+            rewritten.append(block)
+        elif block.get("type") == "video":
+            rewritten.append(_convert_video_block(block))
+        elif block.get("file_id") is not None:
+            # Interfaze has no file store, so a file_id reference can only 400 downstream.
+            raise InterfazeError(
+                "Interfaze cannot resolve content by 'file_id'. Pass 'url' or 'base64' instead."
+            )
+        else:
+            rewritten.append(block)
     return rewritten if rewritten != content else content
 
 
@@ -161,31 +203,49 @@ def _first_effort(*sources: Any) -> Any:
     return None
 
 
-def _visible_text(raw: str) -> str:
-    """`strip_side_channels` trims, which breaks a prefix compare against streamed text.
+def _without_closed_blocks(raw: str) -> str:
+    """Closed blocks removed, no trim — `strip_side_channels` trims and breaks prefix compares."""
+    return re.sub(r"<precontext>[\s\S]*?</precontext>", "", re.sub(r"<think>[\s\S]*?</think>", "", raw))
 
-    `<think>` is prose and survives an unterminated tag verbatim, matching the SDK. A
-    half-written `<precontext>` is JSON metadata, so the text is cut there instead.
+
+def _open_side_channel(text: str) -> tuple[str, str, str] | None:
+    """Returns (tag, before, after) for the first unmatched opening tag."""
+    for tag in ("think", "precontext"):
+        at = text.find(f"<{tag}>")
+        if at != -1:
+            return tag, text[:at], text[at + len(tag) + 2 :]
+    return None
+
+
+def _recover_tail(raw: str, emitted: str, truncated: bool) -> tuple[str, str | None]:
+    """What the caller still owes, given what already streamed.
+
+    An unmatched tag is prose in a completed response and an unclosed side channel in a
+    truncated one, so `finish_reason == "length"` decides. A partial `<think>` becomes
+    reasoning rather than content; a partial `<precontext>` is unparseable and dropped.
     """
-    text = re.sub(r"<precontext>[\s\S]*?</precontext>", "", re.sub(r"<think>[\s\S]*?</think>", "", raw))
-    open_at = text.find("<precontext>")
-    return text if open_at == -1 else text[:open_at]
-
-
-def _missing_tail(raw: str, emitted: str) -> str:
-    """The authoritative transcript minus what already streamed."""
-    text = _visible_text(raw)
-    return text[len(emitted) :] if text.startswith(emitted) else ""
+    text = _without_closed_blocks(raw)
+    open_tag = _open_side_channel(text) if truncated else None
+    visible = open_tag[1] if open_tag else text
+    tail = visible[len(emitted) :] if visible.startswith(emitted) else ""
+    if open_tag and open_tag[0] == "think" and open_tag[2]:
+        return tail, open_tag[2]
+    return tail, None
 
 
 def _final_side_chunk(
-    filt: SideChannelFilter, raw: list[str], seen: set[str], emitted: list[str]
+    filt: SideChannelFilter,
+    raw: list[str],
+    seen: set[str],
+    emitted: list[str],
+    truncated: bool = False,
 ) -> ChatGenerationChunk | None:
     tail = filt.flush()
     joined = "".join(raw)
     _, reasoning, precontext = strip_side_channels(joined)
     if not tail:
-        tail = _missing_tail(joined, "".join(emitted))
+        tail, partial = _recover_tail(joined, "".join(emitted), truncated)
+        reasoning = reasoning or partial
     side: dict[str, Any] = {}
     if reasoning and _fingerprint("reasoning", reasoning) not in seen:
         side["reasoning"] = reasoning
@@ -194,6 +254,7 @@ def _final_side_chunk(
     if not tail and not side:
         return None
     message = AIMessageChunk(content=tail)
+    message.response_metadata["model_provider"] = _PROVIDER
     _apply_side_fields(message, side)
     return ChatGenerationChunk(message=message)
 
@@ -235,7 +296,7 @@ class ChatInterfaze(ChatOpenAI):
                 "Missing API key. Pass ChatInterfaze(api_key=...) or set the INTERFAZE_API_KEY "
                 "environment variable."
             )
-        headers = {k.lower(): v for k, v in (default_headers or {}).items()}
+        headers = {k.lower(): str(v) for k, v in (default_headers or {}).items()}
         if show_additional_info:
             headers[_HEADER_SHOW_ADDITIONAL_INFO] = "true"
         if bypass_moa:
@@ -266,7 +327,7 @@ class ChatInterfaze(ChatOpenAI):
         # Without these, set_llm_cache serves a bypass_cache model the plain model's answer.
         params = {**super()._identifying_params, "_type": self._llm_type}
         if self.default_headers:
-            params["interfaze_headers"] = sorted(self.default_headers.items())
+            params["interfaze_headers"] = _redact_headers(self.default_headers)
         return params
 
     def _get_ls_params(self, stop: list[str] | None = None, **kwargs: Any) -> Any:
@@ -304,6 +365,7 @@ class ChatInterfaze(ChatOpenAI):
         response: Any,
         generation_info: dict[str, Any] | None = None,
     ) -> ChatResult:
+        _default_role(response, "message")
         result = super()._create_chat_result(response, generation_info)
         response_dict = (
             response
@@ -318,7 +380,7 @@ class ChatInterfaze(ChatOpenAI):
             if isinstance(message, AIMessage):
                 message.response_metadata["model_provider"] = _PROVIDER
                 _apply_side_fields(message, side)
-                _strip_tags(message)
+                _strip_tags(message, (generation.generation_info or {}).get("finish_reason") == "length")
                 # The streaming path keeps gen.text in step with the stripped content;
                 # without this, callbacks and the serialized cache carry the raw tags.
                 if isinstance(message.content, str):
@@ -331,6 +393,10 @@ class ChatInterfaze(ChatOpenAI):
         default_chunk_class: type,
         base_generation_info: dict[str, Any] | None,
     ) -> ChatGenerationChunk | None:
+        # `with_structured_output` streams through beta.chat.completions, which nests the
+        # frame under "chunk" — side fields ride the envelope, so unwrap before reading.
+        body = chunk.get("chunk") or chunk
+        _default_role(body, "delta")
         generation_chunk = super()._convert_chunk_to_generation_chunk(
             chunk, default_chunk_class, base_generation_info
         )
@@ -339,7 +405,7 @@ class ChatInterfaze(ChatOpenAI):
         message = generation_chunk.message
         if isinstance(message, AIMessage):
             message.response_metadata["model_provider"] = _PROVIDER
-            side = _extract_side_fields(chunk)
+            side = _extract_side_fields(body)
             if side:
                 _apply_side_fields(message, side)
         return generation_chunk
@@ -355,15 +421,17 @@ class ChatInterfaze(ChatOpenAI):
         raw: list[str] = []
         emitted: list[str] = []
         seen: set[str] = set()
+        finish: Any = None
         for gen in super()._stream(messages, stop=stop, run_manager=None, **kwargs):
             _filter_stream_chunk(gen, filt, raw, emitted)
             _dedupe_side_fields(gen.message, seen)
+            finish = (gen.generation_info or {}).get("finish_reason") or finish
             if run_manager:
                 run_manager.on_llm_new_token(
                     gen.text, chunk=gen, logprobs=(gen.generation_info or {}).get("logprobs")
                 )
             yield gen
-        final = _final_side_chunk(filt, raw, seen, emitted)
+        final = _final_side_chunk(filt, raw, seen, emitted, finish == "length")
         if final is not None:
             if run_manager:
                 run_manager.on_llm_new_token(final.text, chunk=final)
@@ -380,15 +448,17 @@ class ChatInterfaze(ChatOpenAI):
         raw: list[str] = []
         emitted: list[str] = []
         seen: set[str] = set()
+        finish: Any = None
         async for gen in super()._astream(messages, stop=stop, run_manager=None, **kwargs):
             _filter_stream_chunk(gen, filt, raw, emitted)
             _dedupe_side_fields(gen.message, seen)
+            finish = (gen.generation_info or {}).get("finish_reason") or finish
             if run_manager:
                 await run_manager.on_llm_new_token(
                     gen.text, chunk=gen, logprobs=(gen.generation_info or {}).get("logprobs")
                 )
             yield gen
-        final = _final_side_chunk(filt, raw, seen, emitted)
+        final = _final_side_chunk(filt, raw, seen, emitted, finish == "length")
         if final is not None:
             if run_manager:
                 await run_manager.on_llm_new_token(final.text, chunk=final)

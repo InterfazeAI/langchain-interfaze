@@ -143,3 +143,10 @@ describe("ChatInterfaze constructor", () => {
     expect(seen?.get("x-interfaze-bypass-cache")).toBe("true");
   });
 });
+
+describe("header values", () => {
+  it("keeps a scalar header value that normalizeHeaders would drop", () => {
+    const model = new ChatInterfaze({ apiKey: "k", configuration: { defaultHeaders: { "X-Retries": 3, "x-debug": true } as never } });
+    expect(model.clientConfig.defaultHeaders).toMatchObject({ "x-retries": "3", "x-debug": "true" });
+  });
+});

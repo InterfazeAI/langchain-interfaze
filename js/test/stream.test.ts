@@ -162,8 +162,10 @@ describe("streaming side-channel filter", () => {
     const { model } = mockChat(() => sseResponse(chunks));
     const got = await collect(model as never);
     const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
-    // Matches the SDK: an unmatched tag survives verbatim rather than being swallowed.
-    expect(text).toBe("<think>never closed and the real answer 42");
+    // Truncated mid-<think>: the partial reasoning is metadata, not the answer.
+    expect(text).toBe("");
+    const merged = got.map((c) => c.additional_kwargs.reasoning).filter(Boolean);
+    expect(String(merged[0])).toBe("never closed and the real answer 42");
   });
 
   // Non-streaming has the whole body, so an unmatched tag is prose and must survive
@@ -178,7 +180,8 @@ describe("streaming side-channel filter", () => {
     const { model } = mockChat(() => sseResponse(chunks));
     const got = await collect(model as never);
     const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
-    expect(text).toBe("The answer is 42. <think>because reasons");
+    expect(text).toBe("The answer is 42. ");
+    expect(String(got.map((c) => c.additional_kwargs.reasoning).filter(Boolean)[0])).toBe("because reasons");
   });
 
   it("keeps an envelope side field alongside the inline one", async () => {
@@ -218,8 +221,8 @@ describe("streaming side-channel filter", () => {
     const { model } = mockChat(() => sseResponse(chunks));
     const got = await collect(model as never);
     const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
-    // the tail is recovered, but a half-written <precontext> is metadata and is cut
-    expect(text).toBe("\nThe sky is blue because ");
+    // the response completed, so an unmatched tag is prose and survives
+    expect(text).toBe("\nThe sky is blue because <precontext>");
   });
 
   it("never shows a truncated <precontext> as content", async () => {
