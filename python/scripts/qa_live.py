@@ -363,12 +363,15 @@ input_check("pdf url", lambda: file(A["pdf"], "paper.pdf"), "Give the title.")
 input_check("audio url", lambda: file(A["audio"], "stt-example.wav"), "Transcribe this.")
 input_check("video block", lambda: {"type": "video", "url": A["video"]}, "Describe this video.")
 input_check("csv url", lambda: file(A["csv"], "data.csv"), "Name one column header.")
-check(
-    "input: inline URL",
-    lambda: (
-        _assert(llm.invoke(f"Extract the total from this receipt: {A['receipt']}").content, "empty") or "ok"
-    ),
-)
+
+
+def inline_url() -> str:
+    res = llm.invoke(f"Extract the total from this receipt: {A['receipt']}")
+    _assert(res.content, "empty")
+    return "ok"
+
+
+check("input: inline URL", inline_url)
 
 print(
     f"\nLIVE QA: {'ALL PASSED (go)' if not failures else f'{len(failures)} FAILED (no-go): ' + ', '.join(failures)}"

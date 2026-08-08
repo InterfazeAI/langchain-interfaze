@@ -28,9 +28,13 @@ describe("provider identity", () => {
     expect(versions["@langchain/core"]).toBeTypeOf("string");
   });
 
-  it("keeps VERSION in sync with package.json", () => {
-    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+  it("keeps VERSION in sync with both manifests", () => {
+    const read = (p: string) => JSON.parse(readFileSync(new URL(p, import.meta.url), "utf8")) as { name: string; version: string };
+    const pkg = read("../package.json");
+    const jsr = read("../jsr.json");
     expect(VERSION).toBe(pkg.version);
+    expect(jsr.version).toBe(pkg.version);
+    expect(jsr.name).toBe(pkg.name);
   });
 
   it("stamps model_provider on invoke responses", async () => {
@@ -43,6 +47,6 @@ describe("provider identity", () => {
     const { model: m } = mockChat(() => sseResponse([chunk({ content: "hi" }), chunk({}, "stop")]));
     const providers: unknown[] = [];
     for await (const c of await m.stream("hi")) providers.push(c.response_metadata.model_provider);
-    expect(providers.every((p) => p === "interfaze")).toBe(true);
+    expect(new Set(providers)).toEqual(new Set(["interfaze"]));
   });
 });

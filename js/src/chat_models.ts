@@ -1,7 +1,7 @@
 import type { CallbackManagerForLLMRun } from "@langchain/core/callbacks/manager";
 import { BaseChatModel, type LangSmithParams } from "@langchain/core/language_models/chat_models";
 import type { ChatModelStreamEvent } from "@langchain/core/language_models/event";
-import { AIMessage, AIMessageChunk, type BaseMessage } from "@langchain/core/messages";
+import { AIMessage, AIMessageChunk, type BaseMessage, isAIMessage } from "@langchain/core/messages";
 import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
 import { ChatOpenAICompletions, type ChatOpenAIFields, normalizeHeaders } from "@langchain/openai";
 import { INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError } from "interfaze";
@@ -90,7 +90,16 @@ const ACCUMULATING_SIDE_FIELDS: readonly string[] = ["precontext", "reasoning"];
 
 // Accumulating fields dedupe by value, so a different payload still lands. `vcache` is
 // scalar state and dedupes by name — merging two values would concatenate them.
-const fingerprint = (key: string, value: unknown): string => (ACCUMULATING_SIDE_FIELDS.includes(key) ? `${key}:${JSON.stringify(value)}` : key);
+const stableStringify = (value: unknown): string =>
+  JSON.stringify(value, (_k, v) =>
+    v && typeof v === "object" && !Array.isArray(v)
+      ? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)))
+      : v
+  );
+
+// Matches python's json.dumps(sort_keys=True): the same payload with reordered keys
+// must dedupe, not double-emit.
+const fingerprint = (key: string, value: unknown): string => (ACCUMULATING_SIDE_FIELDS.includes(key) ? `${key}:${stableStringify(value)}` : key);
 
 function applySideFields(message: SideChannelCarrier, raw: Record<string, unknown>, seen?: Set<string>): void {
   for (const key of SIDE_FIELDS) {
@@ -270,7 +279,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const result = await super._generate(this.rewriteVideoBlocks(messages), options, runManager);
     for (const generation of result.generations) {
       const message = generation.message;
-      if (message instanceof AIMessage) {
+      if (isAIMessage(message)) {
         message.response_metadata.model_provider = PROVIDER;
         const raw = message.additional_kwargs.__raw_response as Record<string, unknown> | undefined;
         if (raw) applySideFields(message, raw);
@@ -313,6 +322,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
       yield gen;
     }
     const joined = rawParts.join("");
+    this.#frameSinks.delete(options);
     const tail = filter.flush() || missingTail(joined, emittedParts.join(""));
     const { reasoning, precontext } = stripSideChannels(joined);
     if (tail) {
