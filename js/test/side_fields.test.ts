@@ -114,3 +114,17 @@ describe("stream ordering", () => {
     expect(vcache).toBe(true);
   });
 });
+
+describe("empty closed side channels", () => {
+  // `<think></think>` sets reasoning to "": present but empty. `??` would keep it and
+  // discard the recovered tail, which is what python's `or` does not do.
+  it("falls through an empty <think> to the recovered reasoning", async () => {
+    const raw = "<think></think>visible<think>partial reasoning";
+    const { model } = mockChat(() =>
+      jsonResponse(completion(raw, { choices: [{ index: 0, message: { role: "assistant", content: raw }, finish_reason: "length" }] }))
+    );
+    const res = (await model.invoke("x")) as AIMessage;
+    expect(res.content).toBe("visible");
+    expect(res.response_metadata.reasoning).toBe("partial reasoning");
+  });
+});

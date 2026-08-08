@@ -2,6 +2,7 @@
 import { HumanMessage, SystemMessage, type AIMessage } from "@langchain/core/messages";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { tool } from "@langchain/core/tools";
+import { InterfazeError } from "interfaze";
 import { z } from "zod";
 import { ChatInterfaze, type ChatInterfazeFields } from "../src/index.js";
 
@@ -17,6 +18,9 @@ function makeLlm(fields: Partial<ChatInterfazeFields> = {}): ChatInterfaze {
   return new ChatInterfaze({
     apiKey: loadKey(),
     maxRetries: 1,
+    // The library default is 900s; under the workflow's timeout-minutes: 30 a single
+    // hung call would kill the job before it printed anything.
+    timeout: 180_000,
     ...fields,
     ...(BASE_URL ? { configuration: { baseURL: BASE_URL, ...fields.configuration } } : {}),
   });
@@ -145,7 +149,10 @@ await check("streamed precontext (deduped)", async () => {
   const stream = await makeLlm({ showAdditionalInfo: true, bypassCache: true }).stream([ask("Extract the total price.", filePart(ASSETS.receipt))]);
   for await (const chunk of stream) {
     if (typeof chunk.content === "string") visible += chunk.content;
-    if (chunk.response_metadata.precontext) got.push(chunk.response_metadata.precontext);
+    // `[]` is truthy in JS and falsy in python; without this the same response
+    // scores differently in the two gates.
+    const pc = chunk.response_metadata.precontext;
+    if (Array.isArray(pc) ? pc.length > 0 : pc) got.push(pc);
   }
   assert(got.length > 0, "no streamed precontext");
   assert(got.length === 1, `precontext emitted ${got.length}x; should be deduped to 1`);
@@ -197,19 +204,25 @@ await check("streamEvents (tags stripped)", async () => {
   // leak assertion below passes vacuously. Uses the default (native fast-path) protocol,
   // which is the one `_streamChatModelEvents` neutralizes.
   let out = "";
+  let finish: { reason?: string; responseMetadata?: Record<string, unknown> } | undefined;
   const model = makeLlm({ bypassCache: true, reasoningEffort: "high" });
   for await (const ev of model.streamEvents("Why is the sky blue? Briefly.")) {
     if (ev.event === "content-block-delta" && ev.delta.type === "text-delta") out += ev.delta.text;
+    if (ev.event === "message-finish") finish = ev;
   }
   assert(out.length > 0, "no events");
   assert(!out.includes("<think>"), "think tag leaked into events");
+  // The python gate asserts the same two fields on on_chat_model_end; without them a
+  // stream that silently reports the wrong finish reason still passes.
+  assert(finish?.reason === "stop", `finish reason ${finish?.reason}`);
+  assert(finish?.responseMetadata?.model_provider === "interfaze", "no model_provider on the terminal event");
 
   let sawReasoning = false;
   for await (const c of await model.stream("Why is the sky blue? Briefly.")) {
     if (c.response_metadata.reasoning) sawReasoning = true;
   }
   assert(sawReasoning, "no reasoning produced — a <think> leak would be undetectable here");
-  return `${out.length} chars, reasoning confirmed present`;
+  return `${out.length} chars, finish_reason + reasoning confirmed`;
 });
 
 async function rejects(name: string, detail: string, run: () => Promise<unknown>) {
@@ -248,6 +261,7 @@ await check("rejects a video file_id client-side", async () => {
   try {
     await llm.invoke([ask("what is this?", { type: "video", file_id: "file-123" })]);
   } catch (e) {
+    assert(e instanceof InterfazeError, `expected InterfazeError, got ${(e as Error).constructor.name}`);
     assert((e as Error).message.includes("file_id"), (e as Error).message);
     return "InterfazeError";
   }

@@ -150,3 +150,16 @@ describe("header values", () => {
     expect(model.clientConfig.defaultHeaders).toMatchObject({ "x-retries": "3", "x-debug": "true" });
   });
 });
+
+describe("runtimes without process", () => {
+  it("throws InterfazeError rather than ReferenceError when process is absent", () => {
+    const saved = globalThis.process;
+    // @ts-expect-error simulating a browser/edge bundle
+    delete globalThis.process;
+    try {
+      expect(() => new ChatInterfaze()).toThrow(InterfazeError);
+    } finally {
+      globalThis.process = saved;
+    }
+  });
+});

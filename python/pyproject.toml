@@ -18,7 +18,7 @@ classifiers = [
 ]
 dependencies = [
   "interfaze>=1.0.3,<2",
-  "langchain-openai>=1.4.1,<1.5",
+  "langchain-openai>=1.4.1,<2",
   "langchain-core>=1.0,<2",
   "pydantic>=2,<3",
 ]

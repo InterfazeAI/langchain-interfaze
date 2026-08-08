@@ -65,6 +65,13 @@ describe("video content blocks", () => {
     await expect(model.invoke([new HumanMessage({ content: [{ type: "file", file_id: "file-123" }] as never })])).rejects.toThrow(/file_id/);
   });
 
+  it("rejects the openai-native nesting, file.file_id", async () => {
+    const { model } = mockChat(() => jsonResponse(completion()));
+    await expect(model.invoke([new HumanMessage({ content: [{ type: "file", file: { file_id: "file-abc" } }] as never })])).rejects.toThrow(
+      /file_id/
+    );
+  });
+
   it("throws when a video block has no source", async () => {
     const { model } = mockChat(() => jsonResponse(completion()));
     await expect(model.invoke([new HumanMessage({ content: [{ type: "video" }] as never })])).rejects.toThrow(InterfazeError);

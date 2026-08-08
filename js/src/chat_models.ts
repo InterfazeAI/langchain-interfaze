@@ -1,6 +1,7 @@
 import type { CallbackManagerForLLMRun } from "@langchain/core/callbacks/manager";
-import { BaseChatModel, type LangSmithParams } from "@langchain/core/language_models/chat_models";
-import type { ChatModelStreamEvent } from "@langchain/core/language_models/event";
+import { type LangSmithParams } from "@langchain/core/language_models/chat_models";
+import { convertChunksToEvents } from "@langchain/core/language_models/compat";
+import type { ChatModelStreamEvent, FinishReason } from "@langchain/core/language_models/event";
 import { AIMessage, AIMessageChunk, type BaseMessage, isAIMessage } from "@langchain/core/messages";
 import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
 import { ChatOpenAICompletions, type ChatOpenAIFields, normalizeHeaders } from "@langchain/openai";
@@ -9,6 +10,15 @@ import { SideChannelFilter, stripSideChannels, TAG_RE } from "./side_channels.js
 import { VERSION } from "./version.js";
 
 const PROVIDER = "interfaze";
+
+// The v3 protocol has its own vocabulary; anything unmapped leaves `reason` untouched.
+const FINISH_REASONS: Record<string, FinishReason> = {
+  stop: "stop",
+  length: "length",
+  tool_calls: "tool_use",
+  function_call: "tool_use",
+  content_filter: "content_filter",
+};
 
 const DEFAULT_TIMEOUT_MS = 900_000;
 
@@ -150,7 +160,7 @@ function stripTags(message: AIMessage, truncated = false): void {
   const stripped = stripSideChannels(message.content);
   const recovered = truncated ? recoverTail(message.content, "", true) : null;
   const text = recovered ? recovered.tail.trim() : stripped.text;
-  const reasoning = stripped.reasoning ?? recovered?.reasoning;
+  const reasoning = stripped.reasoning || recovered?.reasoning;
   const { precontext } = stripped;
   if (text !== message.content) message.content = text;
   if (reasoning && !hasValue(message.response_metadata.reasoning)) {
@@ -173,7 +183,9 @@ function rewriteContent(content: unknown): unknown {
       return convertVideoBlock(block as VideoBlock);
     }
     // Interfaze has no file store, so a file_id reference can only 400 downstream.
-    if ((block as { file_id?: unknown }).file_id != null) {
+    // Both the standard block shape and the openai-native nesting under `file`.
+    const nested = (block as { file?: { file_id?: unknown } }).file?.file_id;
+    if ((block as { file_id?: unknown }).file_id != null || nested != null) {
       throw new InterfazeError("Interfaze cannot resolve content by 'file_id'. Pass 'url' or 'base64' instead.");
     }
     return block;
@@ -236,7 +248,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
 
   constructor(fields: ChatInterfazeFields = {}) {
     const { apiKey, model, configuration, timeout, showAdditionalInfo, bypassMoA, bypassCache, reasoningEffort, ...rest } = fields;
-    const key = apiKey ?? process.env.INTERFAZE_API_KEY;
+    const key = apiKey ?? (typeof process !== "undefined" ? process.env?.INTERFAZE_API_KEY : undefined);
     if (!key) {
       throw new InterfazeError("Missing API key. Pass new ChatInterfaze({ apiKey: ... }) or set the INTERFAZE_API_KEY environment variable.");
     }
@@ -362,6 +374,13 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     this.#frameSinks.set(options, frames);
     let streamId: string | undefined;
     let finishReason: unknown;
+    const sideChunk = (side: Record<string, unknown>): ChatGenerationChunk | null => {
+      const message = new AIMessageChunk({ content: "", id: streamId });
+      applySideFields(message, side, seen);
+      if (Object.keys(message.additional_kwargs).length === 0) return null;
+      message.response_metadata.model_provider = PROVIDER;
+      return new ChatGenerationChunk({ message, text: "" });
+    };
     for await (const gen of super._streamResponseChunks(this.rewriteVideoBlocks(messages), options, runManager)) {
       const message = gen.message as unknown as SideChannelCarrier;
       streamId ??= (gen.message as AIMessageChunk).id;
@@ -370,10 +389,6 @@ export class ChatInterfaze extends ChatOpenAICompletions {
       const raw = message.additional_kwargs.__raw_response as Record<string, unknown> | undefined;
       if (raw) applySideFields(message, raw, seen);
       delete message.additional_kwargs.__raw_response;
-      // Envelope frames arrive interleaved with content, so apply them here rather than
-      // at stream end: same ordering as python, and a consumer that breaks early still
-      // sees everything the server had already sent.
-      for (const frame of frames.splice(0)) applySideFields(message, frame, seen);
       if (typeof message.content === "string" && message.content) {
         rawParts.push(message.content);
         const filtered = filter.feed(message.content);
@@ -383,6 +398,13 @@ export class ChatInterfaze extends ChatOpenAICompletions {
         // message.content, so keep it in sync or callbacks see the raw tags.
         gen.text = filtered;
       }
+      // Envelope frames arrive interleaved with content, so emit them here rather than at
+      // stream end: python yields the same standalone chunk in the same position, and a
+      // consumer that breaks early still sees everything the server had already sent.
+      for (const frame of frames.splice(0)) {
+        const side = sideChunk(frame);
+        if (side) yield side;
+      }
       yield gen;
     }
     const joined = rawParts.join("");
@@ -391,7 +413,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const recovered = flushed ? { tail: flushed } : recoverTail(joined, emittedParts.join(""), finishReason === "length");
     const tail = recovered.tail;
     const { precontext } = stripSideChannels(joined);
-    const reasoning = stripSideChannels(joined).reasoning ?? recovered.reasoning;
+    const reasoning = stripSideChannels(joined).reasoning || recovered.reasoning;
     if (tail) {
       const message = new AIMessageChunk({ content: tail, id: streamId });
       message.response_metadata.model_provider = PROVIDER;
@@ -405,19 +427,42 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     // One chunk per source, so langchain's own merge concatenates them — the same
     // behaviour the python package gets for free from its per-chunk conversion.
     for (const side of [...frames.splice(0), inline]) {
-      const message = new AIMessageChunk({ content: "", id: streamId });
-      applySideFields(message, side, seen);
-      if (Object.keys(message.additional_kwargs).length === 0) continue;
-      message.response_metadata.model_provider = PROVIDER;
-      yield new ChatGenerationChunk({ message, text: "" });
+      const chunk = sideChunk(side);
+      if (chunk) yield chunk;
     }
   }
 
+  /**
+   * Neither inherited implementation is usable as-is: the parent's reads the raw stream,
+   * so `<think>` leaks into the events, while `convertChunksToEvents` strips tags but
+   * hardcodes `reason: "stop"` and emits no `responseMetadata`. Convert our own stripped
+   * chunks, then put the metadata back on the terminal event so a v3 consumer sees what
+   * `invoke()` would have given it — including the side channels.
+   */
   override async *_streamChatModelEvents(
     messages: BaseMessage[],
     options: this["ParsedCallOptions"],
     runManager?: CallbackManagerForLLMRun
   ): AsyncGenerator<ChatModelStreamEvent> {
-    yield* BaseChatModel.prototype._streamChatModelEvents.call(this, messages, options, runManager);
+    const responseMetadata: Record<string, unknown> = {};
+    const source = this._streamResponseChunks(messages, options, runManager);
+    const observed = (async function* () {
+      for await (const gen of source) {
+        Object.assign(responseMetadata, gen.message.response_metadata);
+        for (const key of ["finish_reason", "model_name"] as const) {
+          const value = gen.generationInfo?.[key];
+          if (value != null) responseMetadata[key] = value;
+        }
+        yield gen;
+      }
+    })();
+    for await (const event of convertChunksToEvents(observed, { signal: options.signal })) {
+      if (event.event !== "message-finish") {
+        yield event;
+        continue;
+      }
+      const reason = FINISH_REASONS[String(responseMetadata.finish_reason)];
+      yield { ...event, ...(reason ? { reason } : {}), responseMetadata };
+    }
   }
 }

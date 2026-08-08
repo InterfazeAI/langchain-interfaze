@@ -68,6 +68,7 @@ def test_video_block_missing_source_raises() -> None:
         model.invoke([HumanMessage(content=[{"type": "video"}])])
 
 
+@respx.mock
 def test_file_id_rejected_on_any_block() -> None:
     model = ChatInterfaze(api_key="k")
     with pytest.raises(InterfazeError, match="file_id"):
@@ -77,3 +78,10 @@ def test_file_id_rejected_on_any_block() -> None:
 def test_scalar_header_values_are_stringified() -> None:
     model = ChatInterfaze(api_key="k", default_headers={"X-Retries": 3})  # ty:ignore[invalid-argument-type]
     assert model.default_headers == {"x-retries": "3"}
+
+
+@respx.mock
+def test_file_id_rejected_in_the_openai_native_nesting() -> None:
+    model = ChatInterfaze(api_key="k")
+    with pytest.raises(InterfazeError, match="file_id"):
+        model.invoke([HumanMessage(content=[{"type": "file", "file": {"file_id": "file-abc"}}])])

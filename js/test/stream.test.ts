@@ -239,7 +239,8 @@ describe("streaming side-channel filter", () => {
     const { model } = mockChat(() => sseResponse(chunks));
     const got = await collect(model as never);
     const ids = new Set(got.map((c) => (c as unknown as { id?: string }).id));
-    expect(ids.size).toBe(1);
+    // size 1 alone would also pass for a set of all-undefined
+    expect([...ids]).toEqual(["req-test"]);
   });
 
   it("emits no side-channel chunk for plain content", async () => {
@@ -250,5 +251,49 @@ describe("streaming side-channel filter", () => {
     expect(text).toBe("Hello world");
     expect(got.some((c) => c.additional_kwargs.precontext || c.additional_kwargs.reasoning)).toBe(false);
     expect(got.some((c) => "__raw_response" in c.additional_kwargs)).toBe(false);
+  });
+});
+
+async function lastFinishEvent(model: { streamEvents: (input: string) => AsyncIterable<Record<string, any>> }): Promise<Record<string, any>> {
+  let finish: Record<string, any> | undefined;
+  for await (const ev of model.streamEvents("x")) if (ev.event === "message-finish") finish = ev;
+  if (!finish) throw new Error("no message-finish event");
+  return finish;
+}
+
+describe("v3 stream events", () => {
+  const frames = [chunk({ content: "<think>r</think>Hi" }), envelopeChunk({ vcache: true, precontext: [{ name: "ocr" }] }), chunk({}, "length")];
+
+  it("reports the real finish reason, not a hardcoded stop", async () => {
+    const { model } = mockChat(() => sseResponse(frames));
+    const finish = await lastFinishEvent(model);
+    expect(finish.reason).toBe("length");
+  });
+
+  it("carries responseMetadata and the side channels to v3 consumers", async () => {
+    const { model } = mockChat(() => sseResponse(frames));
+    const finish = await lastFinishEvent(model);
+    expect(finish.responseMetadata).toMatchObject({
+      model_provider: "interfaze",
+      model_name: "interfaze-beta",
+      finish_reason: "length",
+      vcache: true,
+      precontext: [{ name: "ocr" }],
+      reasoning: "r",
+    });
+  });
+
+  it("still strips tags from the event text", async () => {
+    const { model } = mockChat(() => sseResponse(frames));
+    let text = "";
+    for await (const ev of model.streamEvents("x")) {
+      if (ev.event === "content-block-delta" && ev.delta.type === "text-delta") text += ev.delta.text;
+    }
+    expect(text).toBe("Hi");
+  });
+
+  it("maps tool_calls onto the v3 tool_use vocabulary", async () => {
+    const { model } = mockChat(() => sseResponse([chunk({ content: "x" }), chunk({}, "tool_calls")]));
+    expect((await lastFinishEvent(model)).reason).toBe("tool_use");
   });
 });

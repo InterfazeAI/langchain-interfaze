@@ -133,3 +133,10 @@ def test_cache_key_does_not_publish_header_values() -> None:
 def test_cache_key_shows_the_flags_we_own() -> None:
     model = ChatInterfaze(api_key="k", bypass_cache=True)
     assert model._identifying_params["interfaze_headers"] == ["x-interfaze-bypass-cache=true"]
+
+
+def test_cache_key_separates_two_api_keys() -> None:
+    a = ChatInterfaze(api_key="sk_tenant_a")
+    b = ChatInterfaze(api_key="sk_tenant_b")
+    assert a._get_llm_string() != b._get_llm_string()
+    assert "sk_tenant_a" not in a._get_llm_string()

@@ -343,3 +343,46 @@ def test_roleless_deltas_still_produce_ai_message_chunks() -> None:
     chunks = list(ChatInterfaze(api_key="t").stream([HumanMessage("x")]))
     assert all(isinstance(c, AIMessageChunk) for c in chunks)
     assert "".join(c.content for c in chunks) == "hi"  # ty:ignore[no-matching-overload]
+
+
+_EVENT_FRAMES = [
+    chunk({"content": "<think>r</think>Hi"}),
+    {
+        "id": "req-test",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "interfaze-beta",
+        "choices": [],
+        "vcache": True,
+        "precontext": [{"name": "ocr"}],
+    },
+    chunk({}, "length"),
+]
+
+
+@respx.mock
+def test_astream_events_strips_tags_and_keeps_metadata() -> None:
+    """The js package needs a hand-written _streamChatModelEvents to reach this; python
+    gets it from the shared chunk path. Both must agree on what a v3 consumer sees."""
+
+    async def run() -> Any:
+        mock_sse(_EVENT_FRAMES)
+        async for ev in ChatInterfaze(api_key="t").astream_events([HumanMessage("x")], version="v2"):
+            if ev["event"] == "on_chat_model_end":
+                return ev["data"]["output"]
+        raise AssertionError("no on_chat_model_end event")
+
+    out = asyncio.run(run())
+    assert out.content == "Hi"
+    assert out.response_metadata["finish_reason"] == "length"
+    assert out.response_metadata["vcache"] is True
+    assert out.response_metadata["precontext"] == [{"name": "ocr"}]
+    assert out.response_metadata["reasoning"] == "r"
+
+
+@respx.mock
+def test_invoke_falls_through_an_empty_think_to_recovered_reasoning() -> None:
+    mock_json(completion("<think></think>visible<think>partial reasoning", finish_reason="length"))
+    res = ChatInterfaze(api_key="t").invoke([HumanMessage("x")])
+    assert res.content == "visible"
+    assert res.response_metadata["reasoning"] == "partial reasoning"

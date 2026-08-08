@@ -73,6 +73,10 @@ def _default_role(response: Any, field: str) -> None:
             part.role = "assistant"
 
 
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()[:12]
+
+
 def _redact_headers(headers: Mapping[str, str]) -> list[str]:
     """`_identifying_params` reaches both the LLM cache key and the `invocation_params`
     LangSmith records, so a caller's header value is fingerprinted rather than published.
@@ -146,8 +150,11 @@ def _rewrite_video_blocks(content: Any) -> Any:
             rewritten.append(block)
         elif block.get("type") == "video":
             rewritten.append(_convert_video_block(block))
-        elif block.get("file_id") is not None:
+        elif block.get("file_id") is not None or (
+            isinstance(block.get("file"), dict) and block["file"].get("file_id") is not None
+        ):
             # Interfaze has no file store, so a file_id reference can only 400 downstream.
+            # Both the standard block shape and the openai-native nesting under `file`.
             raise InterfazeError(
                 "Interfaze cannot resolve content by 'file_id'. Pass 'url' or 'base64' instead."
             )
@@ -324,8 +331,13 @@ class ChatInterfaze(ChatOpenAI):
 
     @property
     def _identifying_params(self) -> dict[str, Any]:
-        # Without these, set_llm_cache serves a bypass_cache model the plain model's answer.
+        # Without these, set_llm_cache serves a bypass_cache model the plain model's answer,
+        # and one tenant's key the answer cached under another's.
         params = {**super()._identifying_params, "_type": self._llm_type}
+        # A callable key is resolved per request, so there is no stable value to key on —
+        # the js package skips the fingerprint in that case too.
+        if isinstance(self.openai_api_key, SecretStr):
+            params["interfaze_key"] = _digest(self.openai_api_key.get_secret_value())
         if self.default_headers:
             params["interfaze_headers"] = _redact_headers(self.default_headers)
         return params

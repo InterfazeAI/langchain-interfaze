@@ -30,6 +30,9 @@ def make_llm(**kwargs: Any) -> ChatInterfaze:
     base_url = os.environ.get("INTERFAZE_BASE_URL")
     if base_url:
         kwargs.setdefault("base_url", base_url)
+    # The library default is 900s; under the workflow's timeout-minutes: 30 a single
+    # hung call would kill the job before it printed anything.
+    kwargs.setdefault("timeout", 180.0)
     return ChatInterfaze(api_key=load_key(), max_retries=1, **kwargs)
 
 
@@ -294,16 +297,29 @@ def rejects_bad_base64() -> str:
 async def _astream_events() -> str:
     fresh = make_llm(bypass_cache=True, reasoning_effort="high")
     body = ""
+    end = None
     async for ev in fresh.astream_events("Why is the sky blue? Briefly.", version="v2"):
         if ev["event"] == "on_chat_model_stream":
             content = ev["data"]["chunk"].content
             if isinstance(content, str):
                 body += content
+        elif ev["event"] == "on_chat_model_end":
+            end = ev["data"]["output"]
     _assert(body, "no events")
     _assert("<think>" not in body, "think tag leaked into astream_events")
+    _assert(end is not None, "no on_chat_model_end event")
+    # The js gate asserts the same two fields on message-finish; without them a stream that
+    # silently reports the wrong finish reason still passes.
+    _assert(
+        end.response_metadata.get("finish_reason") == "stop",
+        f"finish_reason {end.response_metadata.get('finish_reason')}",
+    )
+    _assert(
+        end.response_metadata.get("model_provider") == "interfaze", "no model_provider on the terminal event"
+    )
     saw = any(c.response_metadata.get("reasoning") for c in fresh.stream("Why is the sky blue? Briefly."))
     _assert(saw, "no reasoning produced — a <think> leak would be undetectable here")
-    return f"{len(body)} chars, reasoning confirmed present"
+    return f"{len(body)} chars, finish_reason + reasoning confirmed"
 
 
 def astream_events() -> str:
