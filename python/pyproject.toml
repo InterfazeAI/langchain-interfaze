@@ -49,7 +49,10 @@ testpaths = ["tests/unit_tests"]
 addopts = ""
 filterwarnings = [
   "error",
-  'ignore:Pydantic serializer warnings:UserWarning',
+  # Matched on module, not message: langchain-openai hands pydantic a `parsed` field it
+  # types as None, and gating ci on the wording of someone else's warning means a reword
+  # upstream turns into a red build here.
+  "ignore::UserWarning:pydantic.main",
 ]
 
 [tool.ruff]
