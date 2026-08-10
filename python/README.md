@@ -7,7 +7,8 @@ The official [LangChain](https://python.langchain.com) integration for [Interfaz
 ## Install
 
 ```bash
-pip install langchain-interfaze
+pip install interfaze-langchain
+# or: uv add interfaze-langchain · poetry add interfaze-langchain
 ```
 
 This pulls in the `interfaze` client and the LangChain packages it builds on.
@@ -15,7 +16,7 @@ This pulls in the `interfaze` client and the LangChain packages it builds on.
 ## Setup
 
 ```python
-from langchain_interfaze import ChatInterfaze
+from interfaze_langchain import ChatInterfaze
 
 llm = ChatInterfaze(api_key="sk_...")  # or set INTERFAZE_API_KEY and call ChatInterfaze()
 ```
@@ -24,7 +25,7 @@ llm = ChatInterfaze(api_key="sk_...")  # or set INTERFAZE_API_KEY and call ChatI
 
 ## Your first request
 
-Extract structured data from an ID. Interfaze runs OCR for you, `with_structured_output` returns your schema, and the raw OCR lands on `response_metadata["precontext"]` - pass `include_raw=True` to keep both:
+Extract structured data from an ID. Interfaze runs OCR for you, `with_structured_output` returns your schema, and the raw OCR lands on `response_metadata["precontext"]` — keep both with `include_raw`:
 
 ```python
 from langchain_core.messages import HumanMessage
@@ -43,7 +44,10 @@ out = llm.with_structured_output(IdCard, include_raw=True).invoke(
         HumanMessage(
             content=[
                 {"type": "text", "text": "Extract the details from this ID."},
-                {"type": "image_url", "image_url": {"url": "https://r2public.jigsawstack.com/interfaze/examples/id.jpg"}},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "https://r2public.jigsawstack.com/interfaze/examples/id.jpg"},
+                },
             ]
         )
     ]
@@ -61,11 +65,13 @@ Interfaze returns fields a plain chat model would drop. `ChatInterfaze` surfaces
 res = llm.invoke("Which US public companies reported earnings today?")
 
 res.response_metadata.get("precontext")  # raw output of any tool Interfaze ran (OCR / web / scrape / …)
-res.response_metadata.get("reasoning")   # reasoning text (with reasoning_effort and no schema)
-res.response_metadata.get("vcache")      # whether the semantic cache was hit
+res.response_metadata.get("reasoning")  # reasoning text (with reasoning_effort and no schema)
+res.response_metadata.get("vcache")  # whether the semantic cache was hit
 ```
 
 ## Chat
+
+Pass a plain string for a one-off, or a message list for multi-turn.
 
 ```python
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -80,8 +86,6 @@ res = llm.invoke(
 res.content  # a web search backs the answer here
 ```
 
-Pass a plain string for a one-off (`llm.invoke("…")`), or a message list for multi-turn.
-
 ### Streaming
 
 Stream the reply as it's generated; the inline `<think>`/`<precontext>` side-channels are stripped from the streamed content:
@@ -93,7 +97,7 @@ for chunk in llm.stream("Summarize this week's top AI research and cite your sou
 
 ### Structured output
 
-`with_structured_output` takes a Pydantic model (or JSON schema) and returns instances:
+`with_structured_output` takes a Pydantic model (or JSON schema) and returns instances. Pass `include_raw=True` to also get the underlying `AIMessage` (and its `precontext`).
 
 ```python
 from pydantic import BaseModel
@@ -110,14 +114,15 @@ structured.invoke(
         HumanMessage(
             content=[
                 {"type": "text", "text": "Extract this receipt."},
-                {"type": "image_url", "image_url": {"url": "https://jigsawstack.com/preview/vocr-example.jpg"}},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "https://jigsawstack.com/preview/vocr-example.jpg"},
+                },
             ]
         )
     ]
 )  # -> Receipt(merchant="Walmart", total=144.02)
 ```
-
-Pass `include_raw=True` to also get the underlying `AIMessage` (and its `precontext`).
 
 ### Tools and function calling
 
@@ -139,10 +144,12 @@ res.tool_calls  # [{"name": "get_weather", "args": {"city": "Tokyo"}, "id": ...}
 
 ## Reasoning
 
-Set `reasoning_effort`; the reasoning text comes back on `response_metadata["reasoning"]`:
+The reasoning text comes back on `response_metadata["reasoning"]`. Set `reasoning_effort` on the model, or bind it per-chain:
 
 ```python
-llm = ChatInterfaze(reasoning_effort="high")  # also "on" / "off" / "auto"; or llm.bind(reasoning_effort="high")
+llm = ChatInterfaze(
+    reasoning_effort="high"
+)  # also "on" / "off" / "auto"; or llm.bind(reasoning_effort="high")
 
 res = llm.invoke("Which region should we launch in first, and why?")
 res.response_metadata.get("reasoning")
@@ -150,7 +157,7 @@ res.response_metadata.get("reasoning")
 
 ## Multimodal Inputs
 
-Images, audio, PDFs, and CSV use standard LangChain content parts, by URL or base64:
+Images, audio, PDFs, Word documents (`.docx`), and CSV use standard LangChain content parts, by URL or base64:
 
 ```python
 from langchain_core.messages import HumanMessage
@@ -160,7 +167,10 @@ llm.invoke(
         HumanMessage(
             content=[
                 {"type": "text", "text": "Summarize this document."},
-                {"type": "file", "file": {"filename": "paper.pdf", "file_data": "https://arxiv.org/pdf/1706.03762"}},
+                {
+                    "type": "file",
+                    "file": {"filename": "paper.pdf", "file_data": "https://arxiv.org/pdf/1706.03762"},
+                },
             ]
         )
     ]
@@ -182,7 +192,8 @@ llm.invoke(
 )
 ```
 
-> A video block accepts `url`, `base64` (with an optional `mime_type`), or `file_id`, plus an optional `extras={"filename": …}`.
+> A video block accepts `url` or `base64` (with an optional `mime_type`), plus an optional `extras` `{"filename": …}`.
+> The container mime type is inferred from the URL extension when you don't pass one. Interfaze has no file store, so `file_id` is not supported.
 
 ## Async and batch
 
@@ -199,7 +210,7 @@ llm.batch(["Summarize A", "Summarize B", "Summarize C"])
 
 ## Chains (LCEL)
 
-Chain `ChatInterfaze` like any other LangChain runnable:
+Chain `ChatInterfaze` like any other LangChain runnable, via `|`:
 
 ```python
 from langchain_core.prompts import ChatPromptTemplate
@@ -208,17 +219,50 @@ chain = ChatPromptTemplate.from_template("Translate to {lang}: {text}") | llm
 chain.invoke({"lang": "French", "text": "Hello"})
 ```
 
-## Feeding precontext
+## Client options
 
-Pass precomputed tool output to skip Interfaze's internal tool run:
+Set router, cache, and streaming behavior once on the client:
 
 ```python
-llm = ChatInterfaze(precontext=[{"name": "ocr", "result": {"extracted_text": "..."}}])
+llm = ChatInterfaze(
+    show_additional_info=True,  # emit inline <precontext> while streaming
+    bypass_cache=True,  # skip the semantic cache
+    bypass_moa=True,  # skip the mixture-of-architecture router
+)
 ```
+
+`show_additional_info` is the only way to get `precontext` **while streaming** — non-streaming responses always carry it. `bypass_cache` matters when you need a fresh generation: a cache hit replays the stored answer, which has no `reasoning` attached.
+
+The request timeout defaults to **900 s**, because a single call may run OCR, a web search or a transcription inline. Pass `timeout=` to change it.
 
 ## Tasks and guardrails
 
-`ChatInterfaze` is a chat model. For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tasks)) and `guard` safety codes, use the core [`interfaze`](https://github.com/InterfazeAI/interfaze-python) client directly.
+Interfaze reads `<task>` and `<guard>` tags from the **first system message**, so both work through a plain LangChain `SystemMessage`:
+
+```python
+from langchain_core.messages import HumanMessage, SystemMessage
+
+llm.invoke([SystemMessage("<task>web_search</task>"), HumanMessage("GLP-1 research paper")])
+llm.invoke(
+    [SystemMessage("<guard>S1, S2, S3</guard>"), HumanMessage("How to kill a human?")]
+)  # -> "unsafe S1"
+```
+
+One task at a time, from `ocr`, `object_detection`, `gui_detection`, `web_search`, `scraper`, `translate`, `speech_to_text`, `forecast`, `classification`. A task cannot be combined with a non-empty structured-output schema.
+
+For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tasks)), use the core [`interfaze`](https://github.com/InterfazeAI/interfaze-python) client directly.
+
+## Server limits
+
+`ChatInterfaze` forwards standard LangChain options, but validates only the subset supported by Interfaze:
+
+| Option                          | Accepted                                                       |
+| ------------------------------- | -------------------------------------------------------------- |
+| `temperature`                   | `0`–`1` (values above `1` are a `400`)                         |
+| `max_tokens`                    | `1`–`32000`                                                    |
+| `reasoning_effort`              | `minimal`, `low`, `medium`, `high`, plus `on` / `off` / `auto` |
+| `tool_choice`                   | ignored — the router always picks                              |
+| `stop`, `n`, `seed`, `logprobs` | ignored                                                        |
 
 ## Errors
 
@@ -230,18 +274,18 @@ from interfaze import BadRequestError, InterfazeError, RateLimitError
 
 ## Capabilities
 
-| Use case                                    | Entry point                            |
-| ------------------------------------------- | -------------------------------------- |
-| [Chat](#chat)                               | `invoke` / `stream`                    |
-| [Structured output](#structured-output)     | `with_structured_output(Model)`        |
-| [Tools](#tools-and-function-calling)        | `bind_tools([...])`                    |
-| [Reasoning](#reasoning)                     | `reasoning_effort`                     |
-| [Multimodal inputs](#multimodal-inputs)     | content parts + `{"type": "video"}`    |
-| [Precontext](#precontext)                   | `response_metadata["precontext"]`      |
-| [Async and batch](#async-and-batch)         | `ainvoke` / `astream` / `batch`        |
-| [Chains](#chains-lcel)                      | LCEL (`\|`)                            |
-| [Feed precontext](#feeding-precontext)      | `ChatInterfaze(precontext=[...])`      |
-| [Tasks / guardrails](#tasks-and-guardrails) | core `interfaze` client                |
+| Use case                                    | Entry point                         |
+| ------------------------------------------- | ----------------------------------- |
+| [Chat](#chat)                               | `invoke` / `stream`                 |
+| [Structured output](#structured-output)     | `with_structured_output(Model)`     |
+| [Tools](#tools-and-function-calling)        | `bind_tools([...])`                 |
+| [Reasoning](#reasoning)                     | `reasoning_effort`                  |
+| [Multimodal inputs](#multimodal-inputs)     | content parts + `{"type": "video"}` |
+| [Precontext](#precontext)                   | `response_metadata["precontext"]`   |
+| [Async and batch](#async-and-batch)         | `ainvoke` / `astream` / `batch`     |
+| [Chains](#chains-lcel)                      | LCEL (`\|`)                         |
+| [Client options](#client-options)           | `bypass_cache=True`, …              |
+| [Tasks / guardrails](#tasks-and-guardrails) | `SystemMessage("<task>…</task>")`   |
 
 ## License
 

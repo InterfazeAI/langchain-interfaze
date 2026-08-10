@@ -1,6 +1,6 @@
 export type Precontext = Record<string, unknown>;
 
-const TAG_RE = (tag: string) => new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g");
+export const TAG_RE = (tag: string) => new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g");
 
 /** Pull `<think>`/`<precontext>` blocks out of content; returns the rest as `text`. */
 export function stripSideChannels(content: string): {
@@ -9,76 +9,78 @@ export function stripSideChannels(content: string): {
   precontext?: Precontext[];
 } {
   let text = content;
-  const thinks: string[] = [];
+  const thinkBlocks: string[] = [];
   text = text.replace(TAG_RE("think"), (_m, inner: string) => {
-    thinks.push(inner.trim());
+    thinkBlocks.push(inner.trim());
     return "";
   });
-  const pre: Precontext[] = [];
+  const precontexts: Precontext[] = [];
   text = text.replace(TAG_RE("precontext"), (_m, inner: string) => {
     try {
       const parsed = JSON.parse(inner.trim());
-      if (Array.isArray(parsed)) pre.push(...parsed);
-      else pre.push(parsed);
+      if (Array.isArray(parsed)) precontexts.push(...parsed);
+      else precontexts.push(parsed);
     } catch {
       /* ignore malformed block */
     }
     return "";
   });
   const out: { text: string; reasoning?: string; precontext?: Precontext[] } = { text: text.trim() };
-  if (thinks.length) out.reasoning = thinks.join("\n");
-  if (pre.length) out.precontext = pre;
+  if (thinkBlocks.length) out.reasoning = thinkBlocks.join("\n");
+  if (precontexts.length) out.precontext = precontexts;
   return out;
 }
 
 const SIDE_OPEN = ["<think>", "<precontext>"] as const;
 const SIDE_CLOSE: Record<string, string> = { "<think>": "</think>", "<precontext>": "</precontext>" };
 
-function suffixPrefixLen(s: string, tag: string): number {
-  for (let k = Math.min(s.length, tag.length - 1); k > 0; k--) {
-    if (s.slice(s.length - k) === tag.slice(0, k)) return k;
+/** Length of the longest suffix of `text` that opens `tag`, so a tag split across two
+ *  chunks is held back rather than emitted as content. */
+function danglingTagPrefixLength(text: string, tag: string): number {
+  for (let k = Math.min(text.length, tag.length - 1); k > 0; k--) {
+    if (text.slice(text.length - k) === tag.slice(0, k)) return k;
   }
   return 0;
 }
 
 /** Strips inline `<think>`/`<precontext>` blocks from streamed content, chunk by chunk. */
 export class SideChannelFilter {
-  #buf = "";
+  #buffer = "";
   #close: string | undefined;
 
   feed(text: string): string {
-    this.#buf += text;
+    this.#buffer += text;
     const out: string[] = [];
-    while (this.#buf) {
+    while (this.#buffer) {
       if (this.#close === undefined) {
-        const lt = this.#buf.indexOf("<");
-        if (lt === -1) {
-          out.push(this.#buf);
-          this.#buf = "";
+        const openAngleAt = this.#buffer.indexOf("<");
+        if (openAngleAt === -1) {
+          out.push(this.#buffer);
+          this.#buffer = "";
           break;
         }
-        if (lt > 0) {
-          out.push(this.#buf.slice(0, lt));
-          this.#buf = this.#buf.slice(lt);
+        if (openAngleAt > 0) {
+          out.push(this.#buffer.slice(0, openAngleAt));
+          this.#buffer = this.#buffer.slice(openAngleAt);
         }
-        const opened = SIDE_OPEN.find((t) => this.#buf.startsWith(t));
+        const opened = SIDE_OPEN.find((t) => this.#buffer.startsWith(t));
         if (opened) {
           this.#close = SIDE_CLOSE[opened];
-          this.#buf = this.#buf.slice(opened.length);
+          this.#buffer = this.#buffer.slice(opened.length);
           continue;
         }
-        if (SIDE_OPEN.some((t) => t.startsWith(this.#buf))) break;
+        if (SIDE_OPEN.some((t) => t.startsWith(this.#buffer))) break;
         out.push("<");
-        this.#buf = this.#buf.slice(1);
+        this.#buffer = this.#buffer.slice(1);
       } else {
         const close = this.#close;
-        const end = this.#buf.indexOf(close);
+        const end = this.#buffer.indexOf(close);
         if (end === -1) {
-          const keep = suffixPrefixLen(this.#buf, close);
-          this.#buf = keep ? this.#buf.slice(this.#buf.length - keep) : "";
+          const keep = danglingTagPrefixLength(this.#buffer, close);
+          this.#buffer = keep ? this.#buffer.slice(this.#buffer.length - keep) : "";
           break;
         }
-        this.#buf = this.#buf.slice(end + close.length);
+        this.#buffer = this.#buffer.slice(end + close.length);
         this.#close = undefined;
       }
     }
@@ -87,11 +89,11 @@ export class SideChannelFilter {
 
   flush(): string {
     if (this.#close !== undefined) {
-      this.#buf = "";
+      this.#buffer = "";
       return "";
     }
-    const rest = this.#buf;
-    this.#buf = "";
+    const rest = this.#buffer;
+    this.#buffer = "";
     return rest;
   }
 }

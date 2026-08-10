@@ -8,7 +8,32 @@ permissions:
   contents: read
 
 jobs:
+  # Five files carry the version and two of them reach users as a User-Agent. A release
+  # cut from the wrong commit would otherwise publish the previous version, silently.
+  verify:
+    name: verify (versions match the tag · tests pass)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Versions match the release tag
+        run: node scripts/check-versions.mjs "$GITHUB_REF_NAME"
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
+      - name: Python tests
+        working-directory: python
+        run: uv run --all-groups pytest tests/unit_tests/ --disable-socket --allow-unix-socket
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: js/package-lock.json
+      - name: JS tests
+        working-directory: js
+        run: npm ci && npm test
+
   build:
+    needs: verify
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -33,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: testpypi
-      url: https://test.pypi.org/p/langchain-interfaze
+      url: https://test.pypi.org/p/interfaze-langchain
     permissions:
       id-token: write
     steps:
@@ -51,7 +76,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/langchain-interfaze
+      url: https://pypi.org/p/interfaze-langchain
     permissions:
       id-token: write
     steps:
@@ -63,7 +88,9 @@ jobs:
 
   npm-publish:
     name: Publish to npm
+    needs: build
     runs-on: ubuntu-latest
+    if: github.event.release.prerelease == false
     permissions:
       contents: read
       id-token: write
@@ -83,7 +110,9 @@ jobs:
 
   jsr-publish:
     name: Publish to JSR
+    needs: build
     runs-on: ubuntu-latest
+    if: github.event.release.prerelease == false
     permissions:
       contents: read
       id-token: write

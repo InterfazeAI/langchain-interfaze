@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chunk, mockChat, sseResponse } from "./helpers.js";
+import { chunk, envelopeChunk, mockChat, sseResponse } from "./helpers.js";
 
 describe(".streamEvents() filtering", () => {
   it("strips side-channel tags from streamed events (v2 protocol)", async () => {
@@ -18,8 +18,6 @@ describe(".streamEvents() filtering", () => {
   });
 
   it("strips side-channel tags from streamed events (default content-block protocol)", async () => {
-    // Default protocol takes the native fast path the override neutralizes; the v2 case
-    // above routes through the Runnable bridge and can't catch a regression here on its own.
     const chunks = [chunk({ content: "<th" }), chunk({ content: "ink>secret</think>The sky " }), chunk({ content: "is blue." }), chunk({}, "stop")];
     const { model } = mockChat(() => sseResponse(chunks));
     let text = "";
@@ -34,19 +32,8 @@ describe(".streamEvents() filtering", () => {
   });
 });
 
-// Tool-call streaming takes a different event-synthesis path than tags (tool_call_chunks +
-// concat assembly + a separate usage frame), so assert tool calls and usage survive the
-// override on both protocols with no __raw_response leaking into any event.
 describe(".streamEvents() tool-call + usage streaming", () => {
-  // usage-only frame: empty `choices`; `chunk()` always adds one, so build it by hand.
-  const usageChunk = {
-    id: "req-test",
-    object: "chat.completion.chunk",
-    created: 1_700_000_000,
-    model: "interfaze-beta",
-    choices: [],
-    usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
-  };
+  const usageChunk = envelopeChunk({ usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } });
 
   function toolCallSse(): unknown[] {
     return [

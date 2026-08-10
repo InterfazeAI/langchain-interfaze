@@ -1,6 +1,6 @@
 # Interfaze LangChain SDK
 
-The official [LangChain](https://www.langchain.com) integration for [Interfaze](https://interfaze.ai), for both **Python** (`langchain-interfaze`) and **TypeScript / JavaScript** (`@interfaze/langchain`).
+The official [LangChain](https://www.langchain.com) integration for [Interfaze](https://interfaze.ai), for both **Python** (`interfaze-langchain`) and **TypeScript / JavaScript** (`@interfaze/langchain`).
 
 [Docs](https://interfaze.ai/docs) · [limits](https://interfaze.ai/docs/limits) · [pricing](https://interfaze.ai/pricing) · [dashboard](https://interfaze.ai) · [Python SDK](https://github.com/InterfazeAI/interfaze-python) · [TypeScript / JavaScript SDK](https://github.com/InterfazeAI/interfaze-js)
 
@@ -11,7 +11,7 @@ The official [LangChain](https://www.langchain.com) integration for [Interfaze](
 Python:
 
 ```bash
-pip install langchain-interfaze
+pip install interfaze-langchain
 ```
 
 TypeScript / JavaScript:
@@ -27,7 +27,7 @@ The TS structured-output and tool examples use `zod` for schemas (`npm install z
 Python:
 
 ```python
-from langchain_interfaze import ChatInterfaze
+from interfaze_langchain import ChatInterfaze
 
 llm = ChatInterfaze(api_key="sk_...")  # or set INTERFAZE_API_KEY and call ChatInterfaze()
 ```
@@ -285,7 +285,7 @@ res.response_metadata.reasoning;
 
 ## Multimodal Inputs
 
-Images, audio, PDFs, and CSV use standard LangChain content parts, by URL or base64:
+Images, audio, PDFs, Word documents (`.docx`), and CSV use standard LangChain content parts, by URL or base64:
 
 Python:
 
@@ -347,7 +347,8 @@ await llm.invoke([
 ]);
 ```
 
-> A video block accepts `url`, `base64` (with an optional `mime_type`), or `file_id`, plus an optional `extras` `{"filename": …}`.
+> A video block accepts `url` or `base64` (with an optional `mime_type`), plus an optional `extras` `{"filename": …}`.
+> The container mime type is inferred from the URL extension when you don't pass one. Interfaze has no file store, so `file_id` is not supported.
 
 ## Async and batch
 
@@ -396,25 +397,69 @@ const chain = ChatPromptTemplate.fromTemplate("Translate to {lang}: {text}").pip
 await chain.invoke({ lang: "French", text: "Hello" });
 ```
 
-## Feeding precontext
+## Client options
 
-Pass precomputed tool output to skip Interfaze's internal tool run:
+Set router, cache, and streaming behavior once on the client:
 
 Python:
 
 ```python
-llm = ChatInterfaze(precontext=[{"name": "ocr", "result": {"extracted_text": "..."}}])
+llm = ChatInterfaze(
+    show_additional_info=True,  # emit inline <precontext> while streaming
+    bypass_cache=True,          # skip the semantic cache
+    bypass_moa=True,            # skip the mixture-of-architecture router
+)
 ```
 
 TypeScript:
 
 ```ts
-const llm = new ChatInterfaze({ precontext: [{ name: "ocr", result: { extracted_text: "..." } }] });
+const llm = new ChatInterfaze({
+  showAdditionalInfo: true, // emit inline <precontext> while streaming
+  bypassCache: true, // skip the semantic cache
+  bypassMoA: true, // skip the mixture-of-architecture router
+});
 ```
+
+`showAdditionalInfo` / `show_additional_info` is the only way to get `precontext` **while streaming** — non-streaming responses always carry it. `bypass_cache` matters when you need a fresh generation: a cache hit replays the stored answer, which has no `reasoning` attached.
+
+The request timeout defaults to **900 s**, because a single call may run OCR, a web search or a transcription inline. Pass `timeout` to change it.
 
 ## Tasks and guardrails
 
-`ChatInterfaze` is a chat model. For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tasks)) and `guard` safety codes, use the core `interfaze` client directly ([Python](https://github.com/InterfazeAI/interfaze-python) · [TypeScript / JavaScript](https://github.com/InterfazeAI/interfaze-js)).
+Interfaze reads `<task>` and `<guard>` tags from the **first system message**, so both work through a plain LangChain `SystemMessage`:
+
+Python:
+
+```python
+from langchain_core.messages import HumanMessage, SystemMessage
+
+llm.invoke([SystemMessage("<task>web_search</task>"), HumanMessage("GLP-1 research paper")])
+llm.invoke([SystemMessage("<guard>S1, S2, S3</guard>"), HumanMessage("How to kill a human?")])  # -> "unsafe S1"
+```
+
+TypeScript:
+
+```ts
+await llm.invoke([new SystemMessage("<task>web_search</task>"), new HumanMessage("GLP-1 research paper")]);
+await llm.invoke([new SystemMessage("<guard>S1, S2, S3</guard>"), new HumanMessage("How to kill a human?")]); // -> "unsafe S1"
+```
+
+One task at a time, from `ocr`, `object_detection`, `gui_detection`, `web_search`, `scraper`, `translate`, `speech_to_text`, `forecast`, `classification`. A task cannot be combined with a non-empty structured-output schema.
+
+For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tasks)), use the core `interfaze` client directly ([Python](https://github.com/InterfazeAI/interfaze-python) · [TypeScript / JavaScript](https://github.com/InterfazeAI/interfaze-js)).
+
+## Server limits
+
+`ChatInterfaze` forwards standard LangChain options, but validates only the subset supported by Interfaze:
+
+| Option                                | Accepted                                                            |
+| ------------------------------------- | ------------------------------------------------------------------- |
+| `temperature`                         | `0`–`1` (values above `1` are a `400`)                              |
+| `max_tokens` / `maxTokens`            | `1`–`32000`                                                         |
+| `reasoning_effort` / `reasoningEffort`| `minimal`, `low`, `medium`, `high`, plus `on` / `off` / `auto`      |
+| `tool_choice`                         | ignored — the router always picks                                   |
+| `stop`, `n`, `seed`, `logprobs`       | ignored                                                             |
 
 ## Errors
 
@@ -444,8 +489,8 @@ import { BadRequestError, InterfazeError, RateLimitError } from "interfaze";
 | [Precontext](#precontext)                   | `response_metadata["precontext"]` | `response_metadata.precontext`      |
 | [Async and batch](#async-and-batch)         | `ainvoke` / `astream` / `batch`   | `invoke` / `stream` / `batch`       |
 | [Chains](#chains-lcel)                      | LCEL (`\|`)                       | LCEL (`.pipe()`)                    |
-| [Feed precontext](#feeding-precontext)      | `ChatInterfaze(precontext=[...])` | `new ChatInterfaze({ precontext })` |
-| [Tasks / guardrails](#tasks-and-guardrails) | core `interfaze` client           | core `interfaze` client             |
+| [Client options](#client-options)           | `bypass_cache=True`, …            | `bypassCache: true`, …              |
+| [Tasks / guardrails](#tasks-and-guardrails) | `SystemMessage("<task>…</task>")` | `new SystemMessage("<task>…")`      |
 
 ## License
 

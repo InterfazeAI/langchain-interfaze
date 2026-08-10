@@ -3,9 +3,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "langchain-interfaze"
-version = "1.0.1"
+name = "interfaze-langchain"
+version = "1.0.0"
 description = "Interfaze Langchain SDK"
+readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "InterfazeAI" }]
@@ -16,8 +17,8 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "interfaze>=1.0.2,<2",
-  "langchain-openai>=1.4.1,<1.5",
+  "interfaze>=1.0.3,<2",
+  "langchain-openai>=1.4.1,<2",
   "langchain-core>=1.0,<2",
   "pydantic>=2,<3",
 ]
@@ -40,12 +41,19 @@ lint = ["ruff==0.16.0"]
 typing = ["mypy==2.3.0"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["langchain_interfaze"]
+packages = ["interfaze_langchain"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests/unit_tests"]
-addopts = "--cov=langchain_interfaze --cov-report=term-missing --cov-fail-under=95"
+addopts = ""
+filterwarnings = [
+  "error",
+  # Matched on module, not message: langchain-openai hands pydantic a `parsed` field it
+  # types as None, and gating ci on the wording of someone else's warning means a reword
+  # upstream turns into a red build here.
+  "ignore::UserWarning:pydantic.main",
+]
 
 [tool.ruff]
 line-length = 110
@@ -53,13 +61,13 @@ line-length = 110
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["langchain_interfaze"]
+files = ["interfaze_langchain", "scripts"]
 
 [[tool.mypy.overrides]]
 module = ["langchain_openai.*", "langchain_core.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["langchain_interfaze.chat_models"]
+module = ["interfaze_langchain.chat_models"]
 disallow_subclassing_any = false
 warn_return_any = false

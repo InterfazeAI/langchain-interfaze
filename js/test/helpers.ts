@@ -8,7 +8,6 @@ export interface CapturedRequest {
   body: Record<string, unknown> | undefined;
 }
 
-/** Build a ChatInterfaze whose underlying client uses a capturing mock `fetch`. */
 export function mockChat(
   responder: (req: CapturedRequest) => Response,
   extraFields: Partial<ChatInterfazeFields> = {}
@@ -59,13 +58,29 @@ export function completion(content: unknown = "Hi!", extra: Record<string, unkno
   };
 }
 
-export function chunk(delta: Record<string, unknown>, finishReason: string | null = null): Record<string, unknown> {
+export function chunk(
+  delta: Record<string, unknown>,
+  finishReason: string | null = null,
+  extra: Record<string, unknown> = {}
+): Record<string, unknown> {
   return {
     id: "req-test",
     object: "chat.completion.chunk",
     created: 1_700_000_000,
     model: "interfaze-beta",
     choices: [{ index: 0, delta: { role: "assistant", ...delta }, finish_reason: finishReason }],
+    ...extra,
+  };
+}
+
+export function envelopeChunk(extra: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: "req-test",
+    object: "chat.completion.chunk",
+    created: 1_700_000_000,
+    model: "interfaze-beta",
+    choices: [],
+    ...extra,
   };
 }
 

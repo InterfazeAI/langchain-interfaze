@@ -1,11 +1,63 @@
 import { describe, expect, it } from "vitest";
-import { chunk, mockChat, sseResponse } from "./helpers.js";
+import { concat } from "@langchain/core/utils/stream";
+import { isAIMessage } from "@langchain/core/messages";
+import { chunk, completion, envelopeChunk, jsonResponse, lastBody, mockChat, sseResponse } from "./helpers.js";
+
+async function concatAll(model: { stream: (i: string) => Promise<AsyncIterable<any>> }) {
+  let merged: any;
+  for await (const c of await model.stream("x")) merged = merged === undefined ? c : concat(merged, c);
+  return merged;
+}
 
 async function collect(model: { stream: (i: string) => Promise<AsyncIterable<{ content: unknown; additional_kwargs: Record<string, unknown> }>> }) {
   const out: Array<{ content: unknown; additional_kwargs: Record<string, unknown> }> = [];
   for await (const c of await model.stream("x")) out.push(c);
   return out;
 }
+
+// Interfaze sends `role` only on the first delta. If it ever sends none at all,
+// @langchain/openai yields ChatMessageChunk rather than AIMessageChunk — an
+// `instanceof AIMessageChunk` gate here would skip the filter and leak raw tags.
+describe("role-less deltas", () => {
+  const roleless = (content: string, finish: string | null = null) => ({
+    id: "req-test",
+    object: "chat.completion.chunk",
+    created: 1_700_000_000,
+    model: "interfaze-beta",
+    choices: [{ index: 0, delta: content ? { content } : {}, finish_reason: finish }],
+  });
+
+  it("still strips tags and stamps model_provider", async () => {
+    const frames = [roleless("<th"), roleless("ink>secret</think>The sky "), roleless("is blue."), roleless("", "stop")];
+    const { model } = mockChat(() => sseResponse(frames as never));
+    let text = "";
+    const providers: unknown[] = [];
+    for await (const c of await model.stream("x")) {
+      text += typeof c.content === "string" ? c.content : "";
+      providers.push(c.response_metadata.model_provider);
+    }
+    expect(text).toBe("The sky is blue.");
+    expect(text).not.toContain("<think>");
+    expect(new Set(providers)).toEqual(new Set(["interfaze"]));
+  });
+
+  // The role is normalized at the converter, so these stay AIMessageChunk instead of
+  // degrading to the generic ChatMessageChunk (which carries no additional_kwargs).
+  it("yields AIMessageChunk and keeps envelope side fields", async () => {
+    const frames = [{ ...roleless("Hello "), precontext: [{ name: "ocr" }], vcache: true }, roleless("world"), roleless("", "stop")];
+    const { model } = mockChat(() => sseResponse(frames as never));
+    const got = await collect(model as never);
+    const merged = await (async () => {
+      let m: any;
+      for (const c of got) m = m === undefined ? c : concat(m, c);
+      return m;
+    })();
+    expect(new Set(got.map((c) => c.constructor.name))).toEqual(new Set(["AIMessageChunk"]));
+    expect(isAIMessage(merged)).toBe(true);
+    expect(merged.additional_kwargs.precontext).toEqual([{ name: "ocr" }]);
+    expect(merged.additional_kwargs.vcache).toBe(true);
+  });
+});
 
 describe("streaming side-channel filter", () => {
   it("strips inline precontext and carries it on a chunk", async () => {
@@ -42,6 +94,171 @@ describe("streaming side-channel filter", () => {
     expect(reasoning[0]!.additional_kwargs.reasoning).toBe("Rayleigh scattering.");
   });
 
+  // langchain-openai leaves this off for non-OpenAI base URLs, so we opt in.
+  it("asks the server for streamed usage", async () => {
+    const chunks = [chunk({ content: "hi" }), chunk({}, "stop")];
+    const { model, calls } = mockChat(() => sseResponse(chunks));
+    for await (const _ of await model.stream("x")) void _;
+    expect(lastBody(calls).stream_options).toEqual({ include_usage: true });
+  });
+
+  it("applies a repeated envelope side field only once", async () => {
+    const pc = [{ name: "ocr" }];
+    const chunks = [chunk({ content: "a" }, null, { precontext: pc }), chunk({ content: "b" }, null, { precontext: pc }), chunk({}, "stop")];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    expect(got.filter((c) => c.additional_kwargs.precontext)).toHaveLength(1);
+  });
+
+  it("keeps distinct envelope side fields from every chunk", async () => {
+    const chunks = [
+      chunk({ content: "a" }, null, { precontext: [{ name: "ocr" }] }),
+      chunk({ content: "b" }, null, { precontext: [{ name: "web_search" }] }),
+      chunk({}, "stop"),
+    ];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    const names = got.flatMap((c) => ((c.additional_kwargs.precontext as Array<{ name: string }>) ?? []).map((p) => p.name));
+    expect(names).toEqual(["ocr", "web_search"]);
+  });
+
+  it("surfaces side fields riding a choice-less usage frame", async () => {
+    const chunks = [
+      chunk({ content: "hi" }),
+      chunk({}, "stop"),
+      envelopeChunk({
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        precontext: [{ name: "ocr" }],
+        reasoning: "wire",
+        vcache: true,
+      }),
+    ];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const merged = await concatAll(model as never);
+    expect(merged.additional_kwargs.precontext).toEqual([{ name: "ocr" }]);
+    expect(merged.additional_kwargs.reasoning).toBe("wire");
+    expect(merged.additional_kwargs.vcache).toBe(true);
+    // Observing the frame rather than reshaping it: a fabricated choice would make the
+    // parent stamp usage twice, and _mergeDicts sums numbers.
+    expect(merged.response_metadata.usage).toEqual({ prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 });
+  });
+
+  it("delivers an envelope that arrives before the first assistant delta", async () => {
+    const chunks = [envelopeChunk({ precontext: [{ name: "ocr" }], vcache: true }), chunk({ content: "hi" }), chunk({}, "stop")];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const merged = await concatAll(model as never);
+    expect(merged.additional_kwargs.precontext).toEqual([{ name: "ocr" }]);
+    expect(merged.additional_kwargs.vcache).toBe(true);
+  });
+
+  it("adds no extra chunk to a plain stream", async () => {
+    const { model } = mockChat(() => sseResponse([chunk({ content: "hi" }), chunk({}, "stop")]));
+    expect(await collect(model as never)).toHaveLength(2);
+  });
+
+  // A truncated response leaves the tag open; the buffered text must not vanish.
+  it("recovers text from an unterminated tag", async () => {
+    const chunks = [chunk({ content: "<think>never closed and the real answer 42" }), chunk({}, "length")];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
+    // Truncated mid-<think>: the partial reasoning is metadata, not the answer.
+    expect(text).toBe("");
+    const merged = got.map((c) => c.additional_kwargs.reasoning).filter(Boolean);
+    expect(String(merged[0])).toBe("never closed and the real answer 42");
+  });
+
+  // Non-streaming has the whole body, so an unmatched tag is prose and must survive
+  // verbatim — stripping it would mangle any answer that mentions the tag name.
+  it("leaves an unmatched tag alone when not streaming", async () => {
+    const { model } = mockChat(() => jsonResponse(completion("Wrap your reasoning in <think> tags.")));
+    expect((await model.invoke("x")).content).toBe("Wrap your reasoning in <think> tags.");
+  });
+
+  it("does not duplicate the prefix when the tag opens mid-text", async () => {
+    const chunks = [chunk({ content: "The answer is 42. <think>because reasons" }), chunk({}, "length")];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
+    expect(text).toBe("The answer is 42. ");
+    expect(String(got.map((c) => c.additional_kwargs.reasoning).filter(Boolean)[0])).toBe("because reasons");
+  });
+
+  it("keeps an envelope side field alongside the inline one", async () => {
+    const chunks = [
+      chunk({ content: "<think>INLINE</think>Hi" }),
+      chunk({}, "stop"),
+      envelopeChunk({ reasoning: "ENVELOPE", usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
+    ];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const merged = await concatAll(model as never);
+    expect(String(merged.additional_kwargs.reasoning)).toContain("ENVELOPE");
+    expect(String(merged.additional_kwargs.reasoning)).toContain("INLINE");
+  });
+
+  it("keeps every distinct choice-less envelope frame", async () => {
+    const chunks = [
+      envelopeChunk({ precontext: [{ name: "ocr" }] }),
+      chunk({ content: "hi" }),
+      envelopeChunk({ precontext: [{ name: "web_search" }] }),
+      chunk({}, "stop"),
+    ];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const merged = await concatAll(model as never);
+    expect(((merged.additional_kwargs.precontext as Array<{ name: string }>) ?? []).map((p) => p.name)).toEqual(["ocr", "web_search"]);
+  });
+
+  it("surfaces an empty precontext array rather than dropping the key", async () => {
+    const chunks = [chunk({ content: "hi" }, "stop"), envelopeChunk({ precontext: [], vcache: false })];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const merged = await concatAll(model as never);
+    expect(merged.additional_kwargs).toHaveProperty("precontext");
+  });
+
+  // stripSideChannels trims; the streamed text does not. `</think>\n` is the common shape.
+  it("recovers a tail when the visible text starts with whitespace", async () => {
+    const chunks = [chunk({ content: "<think>why</think>\nThe sky is" }), chunk({ content: " blue because <precontext>" })];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
+    // the response completed, so an unmatched tag is prose and survives
+    expect(text).toBe("\nThe sky is blue because <precontext>");
+  });
+
+  it("never shows a truncated <precontext> as content", async () => {
+    const chunks = [chunk({ content: "Total is " }), chunk({ content: '<precontext>[{"name":"ocr","result":{"ssn":"123-45-6789"' }, "length")];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
+    expect(text).toBe("Total is ");
+    expect(text).not.toContain("123-45-6789");
+  });
+
+  // Split at the earliest unmatched tag, not the first one we happen to look for. Tool
+  // JSON can quote the string `<think>`; scanning for think first would split there and
+  // leak the raw `<precontext>` — and the tool payload — into the answer.
+  it("splits at a truncated <precontext> that quotes <think>", async () => {
+    const chunks = [
+      chunk({ content: "Total is " }),
+      chunk({ content: '<precontext>[{"result":"page says <think> here","ssn":"123-45-6789"' }, "length"),
+    ];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
+    expect(text).toBe("Total is ");
+    expect(text).not.toContain("precontext");
+    expect(got.some((c) => String(c.additional_kwargs.reasoning ?? "").includes("123-45-6789"))).toBe(false);
+  });
+
+  it("stamps the stream id on synthetic chunks", async () => {
+    const chunks = [chunk({ content: "<think>r</think>Hi" }), chunk({}, "stop")];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    const ids = new Set(got.map((c) => (c as unknown as { id?: string }).id));
+    // size 1 alone would also pass for a set of all-undefined
+    expect([...ids]).toEqual(["req-test"]);
+  });
+
   it("emits no side-channel chunk for plain content", async () => {
     const chunks = [chunk({ content: "Hello " }), chunk({ content: "world" }), chunk({}, "stop")];
     const { model } = mockChat(() => sseResponse(chunks));
@@ -50,5 +267,49 @@ describe("streaming side-channel filter", () => {
     expect(text).toBe("Hello world");
     expect(got.some((c) => c.additional_kwargs.precontext || c.additional_kwargs.reasoning)).toBe(false);
     expect(got.some((c) => "__raw_response" in c.additional_kwargs)).toBe(false);
+  });
+});
+
+async function lastFinishEvent(model: { streamEvents: (input: string) => AsyncIterable<Record<string, any>> }): Promise<Record<string, any>> {
+  let finish: Record<string, any> | undefined;
+  for await (const ev of model.streamEvents("x")) if (ev.event === "message-finish") finish = ev;
+  if (!finish) throw new Error("no message-finish event");
+  return finish;
+}
+
+describe("v3 stream events", () => {
+  const frames = [chunk({ content: "<think>r</think>Hi" }), envelopeChunk({ vcache: true, precontext: [{ name: "ocr" }] }), chunk({}, "length")];
+
+  it("reports the real finish reason, not a hardcoded stop", async () => {
+    const { model } = mockChat(() => sseResponse(frames));
+    const finish = await lastFinishEvent(model);
+    expect(finish.reason).toBe("length");
+  });
+
+  it("carries responseMetadata and the side channels to v3 consumers", async () => {
+    const { model } = mockChat(() => sseResponse(frames));
+    const finish = await lastFinishEvent(model);
+    expect(finish.responseMetadata).toMatchObject({
+      model_provider: "interfaze",
+      model_name: "interfaze-beta",
+      finish_reason: "length",
+      vcache: true,
+      precontext: [{ name: "ocr" }],
+      reasoning: "r",
+    });
+  });
+
+  it("still strips tags from the event text", async () => {
+    const { model } = mockChat(() => sseResponse(frames));
+    let text = "";
+    for await (const ev of model.streamEvents("x")) {
+      if (ev.event === "content-block-delta" && ev.delta.type === "text-delta") text += ev.delta.text;
+    }
+    expect(text).toBe("Hi");
+  });
+
+  it("maps tool_calls onto the v3 tool_use vocabulary", async () => {
+    const { model } = mockChat(() => sseResponse([chunk({ content: "x" }), chunk({}, "tool_calls")]));
+    expect((await lastFinishEvent(model)).reason).toBe("tool_use");
   });
 });

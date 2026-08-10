@@ -1,0 +1,61 @@
+name: Live QA
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+
+concurrency:
+  group: live-qa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: live QA (python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.repository_owner == 'InterfazeAI'
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install
+        run: uv sync --all-groups
+      - name: Check the key is configured
+        env:
+          INTERFAZE_API_KEY: ${{ secrets.INTERFAZE_API_KEY }}
+        run: test -n "$INTERFAZE_API_KEY" || { echo "::error::INTERFAZE_API_KEY secret is not set"; exit 1; }
+      - name: Run live QA
+        env:
+          INTERFAZE_API_KEY: ${{ secrets.INTERFAZE_API_KEY }}
+        run: uv run python scripts/qa_live.py
+
+  js:
+    name: live QA (js)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.repository_owner == 'InterfazeAI'
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: js/package-lock.json
+      - run: npm ci
+      - name: Check the key is configured
+        env:
+          INTERFAZE_API_KEY: ${{ secrets.INTERFAZE_API_KEY }}
+        run: test -n "$INTERFAZE_API_KEY" || { echo "::error::INTERFAZE_API_KEY secret is not set"; exit 1; }
+      - name: Run live QA
+        env:
+          INTERFAZE_API_KEY: ${{ secrets.INTERFAZE_API_KEY }}
+        run: npm run qa:live

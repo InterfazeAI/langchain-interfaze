@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { AIMessage } from "@langchain/core/messages";
-import { completion, jsonResponse, mockChat } from "./helpers.js";
+import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import { ChatInterfaze } from "../src/index.js";
+import { chunk, completion, envelopeChunk, jsonResponse, mockChat, sseResponse } from "./helpers.js";
 
 const PC = [{ name: "ocr", result: { extracted_text: "x" } }];
 
@@ -26,6 +27,37 @@ describe("non-streaming side fields", () => {
     expect("__raw_response" in res.additional_kwargs).toBe(false);
   });
 
+  it("keeps generation.text in step with the stripped content", async () => {
+    const { model } = mockChat(() => jsonResponse(completion("<think>SECRET</think>The answer is 42")));
+    const res = await model.generate([[new HumanMessage("x")]]);
+    expect(res.generations[0]![0]!.text).toBe("The answer is 42");
+  });
+
+  it("does not let an empty envelope value block the inline payload", async () => {
+    const content = '<precontext>[{"name":"ocr"}]</precontext>The sky is blue.';
+    const { model } = mockChat(() => jsonResponse(completion(content, { precontext: [] })));
+    const res = (await model.invoke("x")) as AIMessage;
+    expect(res.response_metadata.precontext).toEqual([{ name: "ocr" }]);
+  });
+
+  it("keeps a truncated <precontext> out of invoke() content", async () => {
+    const { model } = mockChat(() =>
+      jsonResponse(
+        completion('Total is <precontext>[{"ssn":"123-45-6789"', {
+          choices: [{ index: 0, message: { role: "assistant", content: 'Total is <precontext>[{"ssn":"123-45-6789"' }, finish_reason: "length" }],
+        })
+      )
+    );
+    const res = (await model.invoke("x")) as AIMessage;
+    expect(String(res.content)).not.toContain("123-45-6789");
+  });
+
+  it("keeps prose that mentions a tag intact", async () => {
+    const { model } = mockChat(() => jsonResponse(completion("Wrap metadata in <precontext> tags, then continue.")));
+    const res = (await model.invoke("x")) as AIMessage;
+    expect(res.content).toBe("Wrap metadata in <precontext> tags, then continue.");
+  });
+
   it("strips inline <think>/<precontext> tags from content", async () => {
     const content = "<think>Rayleigh scattering.</think>" + '<precontext>[{"name":"ocr","result":{"x":1}}]</precontext>' + "The sky is blue.";
     const { model } = mockChat(() => jsonResponse(completion(content)));
@@ -33,5 +65,93 @@ describe("non-streaming side fields", () => {
     expect(res.content).toBe("The sky is blue.");
     expect(res.response_metadata.reasoning).toBe("Rayleigh scattering.");
     expect(res.response_metadata.precontext).toEqual([{ name: "ocr", result: { x: 1 } }]);
+  });
+});
+
+describe("identifying params", () => {
+  it("fingerprints the api key and header values instead of publishing them", () => {
+    const { model } = mockChat(() => jsonResponse(completion()));
+    const params = model._identifyingParams() as unknown as Record<string, unknown>;
+    expect(JSON.stringify(params)).not.toContain("sk-test");
+    expect("apiKey" in params).toBe(false);
+    expect("defaultHeaders" in params).toBe(false);
+  });
+
+  it("keeps two header values in separate cache entries", () => {
+    const a = new ChatInterfaze({ apiKey: "k", configuration: { defaultHeaders: { "x-tenant": "a" } } });
+    const b = new ChatInterfaze({ apiKey: "k", configuration: { defaultHeaders: { "x-tenant": "b" } } });
+    expect(JSON.stringify(a._identifyingParams())).not.toEqual(JSON.stringify(b._identifyingParams()));
+  });
+
+  it("shows the flags it owns in the clear", () => {
+    const model = new ChatInterfaze({ apiKey: "k", bypassCache: true });
+    expect((model._identifyingParams() as unknown as Record<string, unknown>).interfazeHeaders).toEqual(["x-interfaze-bypass-cache=true"]);
+  });
+});
+
+describe("v3 metadata merge", () => {
+  it("concatenates accumulating side fields the way .stream() does", async () => {
+    const frames = [
+      chunk({ content: '<precontext>[{"name":"from_inline"}]</precontext>Hi' }),
+      envelopeChunk({ precontext: [{ name: "from_envelope" }] }),
+      chunk({}, "stop"),
+    ];
+    const { model } = mockChat(() => sseResponse(frames));
+    let finish: Record<string, any> | undefined;
+    for await (const ev of model.streamEvents("x")) if (ev.event === "message-finish") finish = ev;
+    expect(finish?.responseMetadata?.precontext).toEqual([{ name: "from_envelope" }, { name: "from_inline" }]);
+  });
+});
+
+describe("v3 raw passthrough metadata", () => {
+  // The parent restates `usage` on two chunks and langchain's merge adds numbers, so
+  // merging it would report double the tokens a request actually cost.
+  it("reports the usage the server sent, not the sum of every frame", async () => {
+    const usage = { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 };
+    const { model } = mockChat(() => sseResponse([chunk({ content: "Hi" }), { ...chunk({}, "stop"), usage }]));
+    let finish: Record<string, any> | undefined;
+    for await (const ev of model.streamEvents("x")) if (ev.event === "message-finish") finish = ev;
+    expect(finish?.responseMetadata?.usage).toEqual(usage);
+    expect(finish?.usage).toMatchObject({ input_tokens: 100, output_tokens: 20, total_tokens: 120 });
+  });
+});
+
+describe("stream ordering", () => {
+  it("attaches envelope side fields to the chunk they arrived with", async () => {
+    const { model } = mockChat(() =>
+      sseResponse([chunk({ content: "a" }), envelopeChunk({ vcache: true }), chunk({ content: "b" }), chunk({}, "stop")])
+    );
+    const seen: Array<[string, unknown]> = [];
+    for await (const c of await model.stream("x")) seen.push([String(c.content), c.additional_kwargs.vcache]);
+    // not buffered to the end: vcache lands before the last content chunk
+    const at = seen.findIndex(([, v]) => v === true);
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(seen.slice(at).some(([text]) => text === "b")).toBe(true);
+  });
+
+  it("still delivers side fields when the consumer breaks early", async () => {
+    const { model } = mockChat(() =>
+      sseResponse([chunk({ content: "a" }), envelopeChunk({ vcache: true }), chunk({ content: "b" }), chunk({}, "stop")])
+    );
+    let vcache: unknown;
+    for await (const c of await model.stream("x")) {
+      vcache ??= c.additional_kwargs.vcache;
+      if (c.content === "b") break;
+    }
+    expect(vcache).toBe(true);
+  });
+});
+
+describe("empty closed side channels", () => {
+  // `<think></think>` sets reasoning to "": present but empty. `??` would keep it and
+  // discard the recovered tail, which is what python's `or` does not do.
+  it("falls through an empty <think> to the recovered reasoning", async () => {
+    const raw = "<think></think>visible<think>partial reasoning";
+    const { model } = mockChat(() =>
+      jsonResponse(completion(raw, { choices: [{ index: 0, message: { role: "assistant", content: raw }, finish_reason: "length" }] }))
+    );
+    const res = (await model.invoke("x")) as AIMessage;
+    expect(res.content).toBe("visible");
+    expect(res.response_metadata.reasoning).toBe("partial reasoning");
   });
 });
