@@ -21,6 +21,7 @@ from tests.unit_tests.conftest import (
     THINK_SPLIT,
     chunk,
     completion,
+    merge,
     mock_json,
     mock_sse,
 )
@@ -124,9 +125,7 @@ def test_streamed_side_fields_are_applied_once() -> None:
     for key in ("reasoning", "precontext", "vcache"):
         assert sum(key in c.additional_kwargs for c in chunks) == 1, key
 
-    merged = chunks[0]
-    for c in chunks[1:]:
-        merged = merged + c
+    merged = merge(chunks)
     assert merged.additional_kwargs["reasoning"] == "why"
     assert merged.response_metadata["reasoning"] == "why"
     assert merged.additional_kwargs["precontext"] == [{"name": "ocr"}]
@@ -154,9 +153,7 @@ def test_vcache_is_deduped_so_it_stays_a_bool() -> None:
         ]
     )
     chunks = list(ChatInterfaze(api_key="t").stream([HumanMessage("hi")]))
-    merged = chunks[0]
-    for c in chunks[1:]:
-        merged = merged + c
+    merged = merge(chunks)
     assert merged.additional_kwargs["vcache"] is True
 
 

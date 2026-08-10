@@ -89,6 +89,7 @@ function convertVideoBlock(block: VideoBlock): Record<string, unknown> {
 const SIDE_FIELDS = ["precontext", "reasoning", "vcache"] as const;
 
 type SideChannelCarrier = {
+  id?: string;
   content: unknown;
   response_metadata: Record<string, unknown>;
   additional_kwargs: Record<string, unknown>;
@@ -252,6 +253,10 @@ export class ChatInterfaze extends ChatOpenAICompletions {
   /** Kept off the parent, whose `reasoningEffort` type is narrower than Interfaze accepts. */
   readonly interfazeReasoningEffort?: InterfazeReasoningEffort;
 
+  // Keyed on the call options, the one object the parent hands back to
+  // completionWithRetry, so concurrent streams never share a sink.
+  readonly #frameSinks = new WeakMap<object, Array<Record<string, unknown>>>();
+
   constructor(fields: ChatInterfazeFields = {}) {
     const { apiKey, model, configuration, timeout, showAdditionalInfo, bypassMoA, bypassCache, reasoningEffort, ...rest } = fields;
     const key = apiKey ?? (typeof process !== "undefined" ? process.env?.INTERFAZE_API_KEY : undefined);
@@ -332,10 +337,6 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     })();
   }
 
-  // Keyed on the call options, the one object the parent hands back to
-  // completionWithRetry, so concurrent streams never share a sink.
-  readonly #frameSinks = new WeakMap<object, Array<Record<string, unknown>>>();
-
   private rewriteVideoBlocks(messages: BaseMessage[]): BaseMessage[] {
     return messages.map((m) => {
       if (!Array.isArray(m.content)) return m;
@@ -376,7 +377,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const frames: Array<Record<string, unknown>> = [];
     this.#frameSinks.set(options, frames);
     let streamId: string | undefined;
-    let finishReason: unknown;
+    let finishReason: string | undefined;
     const sideChunk = (side: Record<string, unknown>): ChatGenerationChunk | null => {
       const message = new AIMessageChunk({ content: "", id: streamId });
       applySideFields(message, side, seen);
@@ -386,7 +387,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     };
     for await (const gen of super._streamResponseChunks(this.rewriteVideoBlocks(messages), options, runManager)) {
       const message = gen.message as unknown as SideChannelCarrier;
-      streamId ??= (gen.message as AIMessageChunk).id;
+      streamId ??= message.id;
       finishReason = gen.generationInfo?.finish_reason ?? finishReason;
       message.response_metadata.model_provider = PROVIDER;
       const raw = message.additional_kwargs.__raw_response as Record<string, unknown> | undefined;
@@ -414,9 +415,8 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const flushed = filter.flush();
     const recovered = flushed ? { tail: flushed } : recoverTail(joined, emittedParts.join(""), finishReason === "length");
     const tail = recovered.tail;
-    const stripped = stripSideChannels(joined);
-    const { precontext } = stripped;
-    const reasoning = stripped.reasoning || recovered.reasoning;
+    const { precontext, reasoning: inlineReasoning } = stripSideChannels(joined);
+    const reasoning = inlineReasoning || recovered.reasoning;
     if (tail) {
       const message = new AIMessageChunk({ content: tail, id: streamId });
       message.response_metadata.model_provider = PROVIDER;

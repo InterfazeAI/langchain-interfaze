@@ -26,11 +26,11 @@ cd python && uv run --python 3.10 --all-groups pytest tests/unit_tests/
 
 ## The langchain-tests standard harness
 
-`tests/integration_tests/` is LangChain's own `ChatModelIntegrationTests` conformance suite. It makes real calls, so it is not in CI and needs a key. It also has its own coverage expectations, hence `--no-cov`:
+`tests/integration_tests/` is LangChain's own `ChatModelIntegrationTests` conformance suite. It makes real calls, so it is not in CI and needs a key:
 
 ```bash
 cd python
-INTERFAZE_API_KEY=sk_... uv run pytest tests/integration_tests --no-cov
+INTERFAZE_API_KEY=sk_... uv run pytest tests/integration_tests
 ```
 
 ## Live QA

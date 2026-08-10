@@ -5,7 +5,7 @@ import json
 import os
 import re
 from collections.abc import AsyncIterator, Iterator, Mapping
-from typing import Any
+from typing import Any, NamedTuple
 
 from interfaze import (
     INTERFAZE_BASE_URL,
@@ -57,7 +57,7 @@ def _extract_side_fields(data: dict[str, Any]) -> dict[str, Any]:
     return {k: data[k] for k in _SIDE_FIELDS if _carries_value(data.get(k))}
 
 
-def _default_role(response: Any, field: str) -> None:
+def _default_role(response: Any, part_key: str) -> None:
     """Default a missing `role` to assistant, in place.
 
     Interfaze sends `role` on the first delta only. Without it the parent builds a
@@ -66,7 +66,7 @@ def _default_role(response: Any, field: str) -> None:
     """
     choices = response.get("choices") if isinstance(response, dict) else getattr(response, "choices", None)
     for choice in choices or ():
-        part = choice.get(field) if isinstance(choice, dict) else getattr(choice, field, None)
+        part = choice.get(part_key) if isinstance(choice, dict) else getattr(choice, part_key, None)
         if isinstance(part, dict):
             if not part.get("role"):
                 part["role"] = "assistant"
@@ -101,9 +101,9 @@ def _strip_tags(message: AIMessage, truncated: bool = False) -> None:
         return
     text, reasoning, precontext = strip_side_channels(message.content)
     if truncated:
-        recovered, partial = _recover_tail(message.content, "", truncated=True)
-        text = recovered.strip()
-        reasoning = reasoning or partial
+        recovered = _recover_tail(message.content, emitted="", truncated=True)
+        text = recovered.tail.strip()
+        reasoning = reasoning or recovered.reasoning
     if text != message.content:
         message.content = text
     if reasoning and not message.response_metadata.get("reasoning"):
@@ -187,15 +187,49 @@ def _dedupe_side_fields(message: BaseMessage, seen: set[str]) -> None:
             seen.add(fingerprint)
 
 
-def _filter_stream_chunk(
-    gen: ChatGenerationChunk, filt: SideChannelFilter, raw: list[str], emitted: list[str]
-) -> None:
-    message = gen.message
-    if isinstance(message, AIMessage) and isinstance(message.content, str) and message.content:
-        raw.append(message.content)
-        message.content = filt.feed(message.content)
-        emitted.append(message.content)
-        gen.text = message.content
+class _SideChannelStream:
+    """Per-stream bookkeeping for the side-channel filter.
+
+    `_stream` and `_astream` are otherwise identical, so holding the state here leaves the
+    two loops differing only by `async`.
+    """
+
+    def __init__(self) -> None:
+        self._filter = SideChannelFilter()
+        self._raw: list[str] = []
+        self._emitted: list[str] = []
+        self._seen: set[str] = set()
+        self._finish_reason: str | None = None
+
+    def absorb(self, gen: ChatGenerationChunk) -> None:
+        message = gen.message
+        if isinstance(message, AIMessage) and isinstance(message.content, str) and message.content:
+            self._raw.append(message.content)
+            message.content = self._filter.feed(message.content)
+            self._emitted.append(message.content)
+            gen.text = message.content
+        _dedupe_side_fields(gen.message, self._seen)
+        self._finish_reason = (gen.generation_info or {}).get("finish_reason") or self._finish_reason
+
+    def final_chunk(self) -> ChatGenerationChunk | None:
+        tail = self._filter.flush()
+        joined = "".join(self._raw)
+        _, reasoning, precontext = strip_side_channels(joined)
+        if not tail:
+            recovered = _recover_tail(joined, "".join(self._emitted), self._finish_reason == "length")
+            tail = recovered.tail
+            reasoning = reasoning or recovered.reasoning
+        side: dict[str, Any] = {}
+        if reasoning and _fingerprint("reasoning", reasoning) not in self._seen:
+            side["reasoning"] = reasoning
+        if precontext and _fingerprint("precontext", precontext) not in self._seen:
+            side["precontext"] = precontext
+        if not tail and not side:
+            return None
+        message = AIMessageChunk(content=tail)
+        message.response_metadata["model_provider"] = _PROVIDER
+        _apply_side_fields(message, side)
+        return ChatGenerationChunk(message=message)
 
 
 def _first_effort(*sources: Any) -> Any:
@@ -211,21 +245,32 @@ def _without_closed_blocks(raw: str) -> str:
     return re.sub(r"<precontext>[\s\S]*?</precontext>", "", re.sub(r"<think>[\s\S]*?</think>", "", raw))
 
 
-def _open_side_channel(text: str) -> tuple[str, str, str] | None:
-    """Returns (tag, before, after) for the earliest unmatched opening tag.
+class _OpenTag(NamedTuple):
+    tag: str
+    before: str
+    after: str
+
+
+class _Recovered(NamedTuple):
+    tail: str
+    reasoning: str | None
+
+
+def _open_side_channel(text: str) -> _OpenTag | None:
+    """The earliest unmatched opening tag.
 
     Earliest by position, not tag order: a truncated answer whose prose mentions
     `<think>` before an unclosed `<precontext>` must split at the precontext.
     """
-    found = [(text.find(f"<{tag}>"), tag) for tag in ("think", "precontext")]
-    candidates = [(at, tag) for at, tag in found if at != -1]
-    if not candidates:
+    positions = [(text.find(f"<{tag}>"), tag) for tag in ("think", "precontext")]
+    present = [(at, tag) for at, tag in positions if at != -1]
+    if not present:
         return None
-    at, tag = min(candidates)
-    return tag, text[:at], text[at + len(tag) + 2 :]
+    at, tag = min(present)
+    return _OpenTag(tag, text[:at], text[at + len(tag) + 2 :])
 
 
-def _recover_tail(raw: str, emitted: str, truncated: bool) -> tuple[str, str | None]:
+def _recover_tail(raw: str, emitted: str, truncated: bool) -> _Recovered:
     """What the caller still owes, given what already streamed.
 
     An unmatched tag is prose in a completed response and an unclosed side channel in a
@@ -234,37 +279,11 @@ def _recover_tail(raw: str, emitted: str, truncated: bool) -> tuple[str, str | N
     """
     text = _without_closed_blocks(raw)
     open_tag = _open_side_channel(text) if truncated else None
-    visible = open_tag[1] if open_tag else text
+    visible = open_tag.before if open_tag else text
     tail = visible[len(emitted) :] if visible.startswith(emitted) else ""
-    if open_tag and open_tag[0] == "think" and open_tag[2]:
-        return tail, open_tag[2]
-    return tail, None
-
-
-def _final_side_chunk(
-    filt: SideChannelFilter,
-    raw: list[str],
-    seen: set[str],
-    emitted: list[str],
-    truncated: bool = False,
-) -> ChatGenerationChunk | None:
-    tail = filt.flush()
-    joined = "".join(raw)
-    _, reasoning, precontext = strip_side_channels(joined)
-    if not tail:
-        tail, partial = _recover_tail(joined, "".join(emitted), truncated)
-        reasoning = reasoning or partial
-    side: dict[str, Any] = {}
-    if reasoning and _fingerprint("reasoning", reasoning) not in seen:
-        side["reasoning"] = reasoning
-    if precontext and _fingerprint("precontext", precontext) not in seen:
-        side["precontext"] = precontext
-    if not tail and not side:
-        return None
-    message = AIMessageChunk(content=tail)
-    message.response_metadata["model_provider"] = _PROVIDER
-    _apply_side_fields(message, side)
-    return ChatGenerationChunk(message=message)
+    if open_tag and open_tag.tag == "think" and open_tag.after:
+        return _Recovered(tail, open_tag.after)
+    return _Recovered(tail, None)
 
 
 class ChatInterfaze(ChatOpenAI):
@@ -433,23 +452,17 @@ class ChatInterfaze(ChatOpenAI):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
-        filt = SideChannelFilter()
-        raw: list[str] = []
-        emitted: list[str] = []
-        seen: set[str] = set()
-        finish: Any = None
+        stream = _SideChannelStream()
         # run_manager is withheld deliberately: ChatOpenAI fires on_llm_new_token before
         # yielding, so handlers would see unfiltered `<think>`. Fired below instead.
         for gen in super()._stream(messages, stop=stop, run_manager=None, **kwargs):
-            _filter_stream_chunk(gen, filt, raw, emitted)
-            _dedupe_side_fields(gen.message, seen)
-            finish = (gen.generation_info or {}).get("finish_reason") or finish
+            stream.absorb(gen)
             if run_manager:
                 run_manager.on_llm_new_token(
                     gen.text, chunk=gen, logprobs=(gen.generation_info or {}).get("logprobs")
                 )
             yield gen
-        final = _final_side_chunk(filt, raw, seen, emitted, finish == "length")
+        final = stream.final_chunk()
         if final is not None:
             if run_manager:
                 run_manager.on_llm_new_token(final.text, chunk=final)
@@ -462,22 +475,16 @@ class ChatInterfaze(ChatOpenAI):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
-        filt = SideChannelFilter()
-        raw: list[str] = []
-        emitted: list[str] = []
-        seen: set[str] = set()
-        finish: Any = None
+        stream = _SideChannelStream()
         # See _stream: the manager is withheld so handlers never see unfiltered `<think>`.
         async for gen in super()._astream(messages, stop=stop, run_manager=None, **kwargs):
-            _filter_stream_chunk(gen, filt, raw, emitted)
-            _dedupe_side_fields(gen.message, seen)
-            finish = (gen.generation_info or {}).get("finish_reason") or finish
+            stream.absorb(gen)
             if run_manager:
                 await run_manager.on_llm_new_token(
                     gen.text, chunk=gen, logprobs=(gen.generation_info or {}).get("logprobs")
                 )
             yield gen
-        final = _final_side_chunk(filt, raw, seen, emitted, finish == "length")
+        final = stream.final_chunk()
         if final is not None:
             if run_manager:
                 await run_manager.on_llm_new_token(final.text, chunk=final)

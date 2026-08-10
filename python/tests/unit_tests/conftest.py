@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import functools
 import json
+import operator
 from typing import Any
 
 import httpx
@@ -100,3 +102,7 @@ REPEATED_SIDE: list[dict[str, Any]] = [
     chunk({"content": "b"}) | {"reasoning": "why", "precontext": [{"name": "ocr"}], "vcache": True},
     chunk({}, finish_reason="stop"),
 ]
+
+
+def merge(chunks: list[Any]) -> Any:
+    return functools.reduce(operator.add, chunks)
