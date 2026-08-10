@@ -85,16 +85,23 @@ await check("token usage", async () => {
   return `in=${u!.input_tokens} out=${u!.output_tokens}`;
 });
 
+// Reasoning is requested so the wire actually carries `<think>`. Against a prompt that
+// produces no tags the leak assertion cannot fail, which is how this check passed while
+// the filter was broken for role-less deltas.
 await check("streaming (tags stripped)", async () => {
   let n = 0;
   let out = "";
-  for await (const chunk of await llm.stream("Count 1 to 5.")) {
+  let sawReasoning = false;
+  const stream = await fresh.stream("Why is the sky blue? Briefly.", { reasoningEffort: "high" } as never);
+  for await (const chunk of stream) {
     n++;
     out += text(chunk);
+    if (chunk.response_metadata.reasoning) sawReasoning = true;
   }
   assert(n > 0 && out.length > 0, "empty stream");
   assert(!out.includes("<think>") && !out.includes("<precontext>"), "side-channel tags leaked");
-  return `${n} chunks`;
+  assert(sawReasoning, "no reasoning produced — a tag leak would be undetectable here");
+  return `${n} chunks, reasoning stripped out`;
 });
 
 await check("streaming usage metadata", async () => {
@@ -141,6 +148,16 @@ await check("reasoning_effort 'on' (constructor)", async () => {
 await check("precontext (auto path)", async () => {
   const res = await llm.invoke([ask("Extract the total price.", filePart(ASSETS.receipt))]);
   assert(names(res).length > 0, "no precontext");
+  return `names=${names(res)}`;
+});
+
+// The README's headline claim: a bare question routes itself to a tool. No attachment and
+// no `<task>` tag — the MoA router alone decides, which is the one behaviour that
+// separates Interfaze from any OpenAI-compatible endpoint.
+await check("router picks a tool unprompted", async () => {
+  const res = await fresh.invoke("Which US public companies reported earnings today?");
+  assert(text(res).length > 0, "empty");
+  assert(names(res).length > 0, "router ran no tool; the README says a web search backs this answer");
   return `names=${names(res)}`;
 });
 
@@ -247,17 +264,9 @@ await rejects("rejects an invalid task", "invalid task", () => llm.invoke([new S
 await rejects("rejects an empty message", "", () => llm.invoke([new HumanMessage("")]));
 await rejects("rejects malformed base64", "", () => llm.invoke([ask("what is this?", image("data:image/jpeg;base64,@@@@not-valid@@@@===="))]));
 
-await check("rejects temperature > 1", async () => {
-  try {
-    await makeLlm({ temperature: 1.5 }).invoke("hi");
-  } catch (e) {
-    const err = e as { status?: number };
-    assert(err.status === 400, `expected 400, got ${err.status}`);
-    return "400";
-  }
-  throw new Error("temperature 1.5 was accepted; the README says it is a 400");
-});
+await rejects("rejects temperature > 1", "", () => makeLlm({ temperature: 1.5 }).invoke("hi"));
 
+// Not a `rejects` case: this one never reaches the server.
 await check("rejects a video file_id client-side", async () => {
   try {
     await llm.invoke([ask("what is this?", { type: "video", file_id: "file-123" })]);

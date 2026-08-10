@@ -8,9 +8,10 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from collections.abc import Callable
 from typing import Any
 
-from interfaze import InterfazeError
+from interfaze import BadRequestError, InterfazeError
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
@@ -30,33 +31,31 @@ def make_llm(**kwargs: Any) -> ChatInterfaze:
     base_url = os.environ.get("INTERFAZE_BASE_URL")
     if base_url:
         kwargs.setdefault("base_url", base_url)
-    # The library default is 900s; under the workflow's timeout-minutes: 30 a single
-    # hung call would kill the job before it printed anything.
     kwargs.setdefault("timeout", 180.0)
     return ChatInterfaze(api_key=load_key(), max_retries=1, **kwargs)
 
 
 llm = make_llm()
+
 # The semantic cache replays a stored answer with no `reasoning` attached.
 fresh = make_llm(bypass_cache=True)
 
-A = {
+ASSETS = {
     "receipt": "https://jigsawstack.com/preview/vocr-example.jpg",
     "id": "https://r2public.jigsawstack.com/interfaze/examples/id.jpg",
     "audio": "https://jigsawstack.com/preview/stt-example.wav",
     "video": "https://download.samplelib.com/mp4/sample-5s.mp4",
     "csv": "https://r2public.jigsawstack.com/interfaze/examples/prediction-example.csv",
     "pdf": "https://arxiv.org/pdf/1706.03762",
-    # Converted to PDF server-side at ingestion, so no client-side handling exists to break.
     "docx": "https://calibre-ebook.com/downloads/demos/demo.docx",
     "scene": "https://ultralytics.com/images/bus.jpg",
 }
 failures: list[str] = []
 
 
-def check(name: str, fn: Any) -> None:
+def check(name: str, run: Callable[[], str]) -> None:
     try:
-        print(f"  PASS  {name} — {fn()}")
+        print(f"  PASS  {name} — {run()}")
     except Exception as e:  # noqa: BLE001
         print(f"  FAIL  {name} — {type(e).__name__}: {e}")
         failures.append(name)
@@ -111,11 +110,18 @@ def token_usage() -> str:
 
 
 def streaming() -> str:
-    chunks = list(llm.stream("Count 1 to 5."))
+    """Reasoning is requested so the wire actually carries `<think>`.
+
+    Against a prompt that produces no tags the leak assertion below cannot fail, which is
+    how this check passed while the filter was broken for role-less deltas.
+    """
+    chunks = list(fresh.stream("Why is the sky blue? Briefly.", reasoning_effort="high"))
     text = "".join(str(c.content) for c in chunks)
     _assert(chunks and text, "empty stream")
     _assert("<think>" not in text and "<precontext>" not in text, "side-channel tags leaked")
-    return f"{len(chunks)} chunks"
+    reasoning = [c for c in chunks if c.response_metadata.get("reasoning")]
+    _assert(reasoning, "no reasoning produced — a tag leak would be undetectable here")
+    return f"{len(chunks)} chunks, reasoning stripped out"
 
 
 def streaming_usage() -> str:
@@ -168,8 +174,15 @@ def reasoning_widened() -> str:
 
 
 def precontext() -> str:
-    res = llm.invoke([ask("Extract the total price.", file(A["receipt"]))])
+    res = llm.invoke([ask("Extract the total price.", file(ASSETS["receipt"]))])
     _assert(names(res), "no precontext")
+    return f"names={names(res)}"
+
+
+def router_picks_a_tool_unprompted() -> str:
+    res = fresh.invoke("Which US public companies reported earnings today?")
+    _assert(res.content, "empty")
+    _assert(names(res), "router ran no tool; the README says a web search backs this answer")
     return f"names={names(res)}"
 
 
@@ -178,7 +191,7 @@ def streamed_precontext() -> str:
     got: list[Any] = []
     visible: list[str] = []
     for chunk in make_llm(show_additional_info=True, bypass_cache=True).stream(
-        [ask("Extract the total price.", file(A["receipt"]))]
+        [ask("Extract the total price.", file(ASSETS["receipt"]))]
     ):
         if isinstance(chunk.content, str):
             visible.append(chunk.content)
@@ -234,14 +247,18 @@ def async_smoke() -> str:
     return asyncio.run(go())
 
 
-def rejects_high_temperature() -> str:
-    from interfaze import BadRequestError
+def rejects(name: str, detail: str, run: Callable[[], Any]) -> None:
+    """Assert the server refuses a request, optionally matching text in the 400."""
 
-    try:
-        make_llm(temperature=1.5).invoke("hi")
-    except BadRequestError:
-        return "400"
-    raise AssertionError("temperature 1.5 was accepted; the README says it is a 400")
+    def fn() -> str:
+        try:
+            run()
+        except BadRequestError as e:
+            _assert(not detail or detail in str(e).lower(), str(e))
+            return "400"
+        raise AssertionError(f"{name}: the request was accepted")
+
+    check(name, fn)
 
 
 def rejects_video_file_id() -> str:
@@ -253,53 +270,11 @@ def rejects_video_file_id() -> str:
     raise AssertionError("file_id was accepted")
 
 
-def rejects_multiple_tasks() -> str:
-    from interfaze import BadRequestError
-
-    try:
-        llm.invoke([SystemMessage("<task>ocr, web_search</task>"), HumanMessage("hi")])
-    except BadRequestError as e:
-        _assert("only one task" in str(e).lower(), str(e))
-        return "400"
-    raise AssertionError("two tasks were accepted")
-
-
-def rejects_invalid_task() -> str:
-    from interfaze import BadRequestError
-
-    try:
-        llm.invoke([SystemMessage("<task>foobar_tool</task>"), HumanMessage("hi")])
-    except BadRequestError as e:
-        _assert("invalid task" in str(e).lower(), str(e))
-        return "400"
-    raise AssertionError("an unknown task was accepted")
-
-
-def rejects_empty_message() -> str:
-    from interfaze import BadRequestError
-
-    try:
-        llm.invoke([HumanMessage("")])
-    except BadRequestError:
-        return "400"
-    raise AssertionError("an empty message was accepted")
-
-
-def rejects_bad_base64() -> str:
-    from interfaze import BadRequestError
-
-    try:
-        llm.invoke([ask("what is this?", image("data:image/jpeg;base64,@@@@not-valid@@@@===="))])
-    except BadRequestError:
-        return "400"
-    raise AssertionError("malformed base64 was accepted")
-
-
 async def _astream_events() -> str:
-    fresh = make_llm(bypass_cache=True, reasoning_effort="high")
+    reasoning_llm = make_llm(bypass_cache=True, reasoning_effort="high")
     body = ""
     end: Any = None
-    async for ev in fresh.astream_events("Why is the sky blue? Briefly.", version="v2"):
+    async for ev in reasoning_llm.astream_events("Why is the sky blue? Briefly.", version="v2"):
         if ev["event"] == "on_chat_model_stream":
             content = ev["data"]["chunk"].content
             if isinstance(content, str):
@@ -318,7 +293,9 @@ async def _astream_events() -> str:
     _assert(
         end.response_metadata.get("model_provider") == "interfaze", "no model_provider on the terminal event"
     )
-    saw = any(c.response_metadata.get("reasoning") for c in fresh.stream("Why is the sky blue? Briefly."))
+    saw = any(
+        c.response_metadata.get("reasoning") for c in reasoning_llm.stream("Why is the sky blue? Briefly.")
+    )
     _assert(saw, "no reasoning produced — a <think> leak would be undetectable here")
     return f"{len(body)} chars, finish_reason + reasoning confirmed"
 
@@ -327,7 +304,7 @@ def astream_events() -> str:
     return asyncio.run(_astream_events())
 
 
-def input_check(label: str, make_part: Any, prompt: str) -> None:
+def input_check(label: str, make_part: Callable[[], dict[str, Any]], prompt: str) -> None:
     def fn() -> str:
         res = llm.invoke([ask(prompt, make_part())])
         _assert(res.content, "empty")
@@ -342,7 +319,7 @@ class Bill(BaseModel):
 
 
 def ocr_structured() -> str:
-    out = llm.with_structured_output(Bill).invoke([ask("Extract the receipt.", image(A["receipt"]))])
+    out = llm.with_structured_output(Bill).invoke([ask("Extract the receipt.", image(ASSETS["receipt"]))])
     if not isinstance(out, Bill):
         raise TypeError(f"not a Bill: {out!r}")
     _assert(out.vendor_name and out.total_amount > 0, "fields missing")
@@ -359,6 +336,7 @@ check("tool calling", tool_calling)
 check("reasoning + <think>", reasoning)
 check("reasoning_effort 'on'", reasoning_widened)
 check("precontext (auto path)", precontext)
+check("router picks a tool unprompted", router_picks_a_tool_unprompted)
 check("streamed precontext (deduped)", streamed_precontext)
 check("ocr -> structured output", ocr_structured)
 check("guardrails -> unsafe", guardrails)
@@ -368,23 +346,36 @@ check("batch", batch)
 check("async (ainvoke + astream)", async_smoke)
 
 check("astream_events (tags stripped)", astream_events)
-check("rejects temperature > 1", rejects_high_temperature)
-check("rejects multiple <task> tags", rejects_multiple_tasks)
-check("rejects an invalid task", rejects_invalid_task)
-check("rejects an empty message", rejects_empty_message)
-check("rejects malformed base64", rejects_bad_base64)
+rejects("rejects temperature > 1", "", lambda: make_llm(temperature=1.5).invoke("hi"))
+rejects(
+    "rejects multiple <task> tags",
+    "only one task",
+    lambda: llm.invoke([SystemMessage("<task>ocr, web_search</task>"), HumanMessage("hi")]),
+)
+rejects(
+    "rejects an invalid task",
+    "invalid task",
+    lambda: llm.invoke([SystemMessage("<task>foobar_tool</task>"), HumanMessage("hi")]),
+)
+rejects("rejects an empty message", "", lambda: llm.invoke([HumanMessage("")]))
+rejects(
+    "rejects malformed base64",
+    "",
+    lambda: llm.invoke([ask("what is this?", image("data:image/jpeg;base64,@@@@not-valid@@@@===="))]),
+)
+# Not a `rejects` case: this one never reaches the server.
 check("rejects a video file_id client-side", rejects_video_file_id)
 
-input_check("image url", lambda: image(A["id"]), "What kind of document is this?")
-input_check("pdf url", lambda: file(A["pdf"], "paper.pdf"), "Give the title.")
-input_check("docx url", lambda: file(A["docx"], "demo.docx"), "What is this document about?")
-input_check("audio url", lambda: file(A["audio"], "stt-example.wav"), "Transcribe this.")
-input_check("video block", lambda: {"type": "video", "url": A["video"]}, "Describe this video.")
-input_check("csv url", lambda: file(A["csv"], "data.csv"), "Name one column header.")
+input_check("image url", lambda: image(ASSETS["id"]), "What kind of document is this?")
+input_check("pdf url", lambda: file(ASSETS["pdf"], "paper.pdf"), "Give the title.")
+input_check("docx url", lambda: file(ASSETS["docx"], "demo.docx"), "What is this document about?")
+input_check("audio url", lambda: file(ASSETS["audio"], "stt-example.wav"), "Transcribe this.")
+input_check("video block", lambda: {"type": "video", "url": ASSETS["video"]}, "Describe this video.")
+input_check("csv url", lambda: file(ASSETS["csv"], "data.csv"), "Name one column header.")
 
 
 def inline_url() -> str:
-    res = llm.invoke(f"Extract the total from this receipt: {A['receipt']}")
+    res = llm.invoke(f"Extract the total from this receipt: {ASSETS['receipt']}")
     _assert(res.content, "empty")
     return "ok"
 
