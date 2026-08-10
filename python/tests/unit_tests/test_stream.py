@@ -285,6 +285,26 @@ def test_truncated_precontext_is_not_shown_as_content() -> None:
 
 
 @respx.mock
+def test_truncated_precontext_wins_over_a_later_think_mention() -> None:
+    """Split at the earliest unmatched tag, not the first one we happen to look for.
+
+    Tool JSON can quote the string `<think>`; scanning for think first would split there
+    and leak the raw `<precontext>` — and the tool payload — into the answer.
+    """
+    mock_json(
+        completion(
+            'Total is <precontext>[{"result":"page says <think> here","ssn":"123-45-6789"',
+            finish_reason="length",
+        )
+    )
+    res = ChatInterfaze(api_key="t").invoke([HumanMessage("x")])
+    assert res.content == "Total is"
+    assert "precontext" not in str(res.content)
+    assert "123-45-6789" not in str(res.content)
+    assert "123-45-6789" not in str(res.response_metadata.get("reasoning") or "")
+
+
+@respx.mock
 def test_invoke_truncated_precontext_is_not_content() -> None:
     """The truncation rule applies to invoke(), not just streaming."""
     mock_json(completion('Total is <precontext>[{"ssn":"123-45-6789"', finish_reason="length"))

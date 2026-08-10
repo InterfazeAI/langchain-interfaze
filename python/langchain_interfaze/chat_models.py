@@ -83,10 +83,7 @@ def _redact_headers(headers: Mapping[str, str]) -> list[str]:
     Two values still differ, which is all the cache key needs. The flags we own are ours
     to show."""
     public = (_HEADER_SHOW_ADDITIONAL_INFO, _HEADER_BYPASS_MOA, _HEADER_BYPASS_CACHE)
-    return [
-        f"{k}={headers[k]}" if k in public else f"{k}#{hashlib.sha256(headers[k].encode()).hexdigest()[:12]}"
-        for k in sorted(headers)
-    ]
+    return [f"{k}={headers[k]}" if k in public else f"{k}#{_digest(headers[k])}" for k in sorted(headers)]
 
 
 def _apply_side_fields(message: AIMessage, side: dict[str, Any]) -> None:
@@ -216,12 +213,17 @@ def _without_closed_blocks(raw: str) -> str:
 
 
 def _open_side_channel(text: str) -> tuple[str, str, str] | None:
-    """Returns (tag, before, after) for the first unmatched opening tag."""
-    for tag in ("think", "precontext"):
-        at = text.find(f"<{tag}>")
-        if at != -1:
-            return tag, text[:at], text[at + len(tag) + 2 :]
-    return None
+    """Returns (tag, before, after) for the earliest unmatched opening tag.
+
+    Earliest by position, not by tag order: a truncated answer whose visible prose
+    mentions `<think>` before an unclosed `<precontext>` must split at the precontext.
+    """
+    found = [(text.find(f"<{tag}>"), tag) for tag in ("think", "precontext")]
+    candidates = [(at, tag) for at, tag in found if at != -1]
+    if not candidates:
+        return None
+    at, tag = min(candidates)
+    return tag, text[:at], text[at + len(tag) + 2 :]
 
 
 def _recover_tail(raw: str, emitted: str, truncated: bool) -> tuple[str, str | None]:

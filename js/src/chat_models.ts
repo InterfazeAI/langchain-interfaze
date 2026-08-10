@@ -134,12 +134,16 @@ function withoutClosedBlocks(raw: string): string {
  * model wrote (`"wrap it in <think> tags"`); in a truncated one it is a side channel the
  * server never got to close. `finish_reason: "length"` is the only reliable signal.
  */
+// Earliest by position, not by tag order: a truncated answer whose visible prose mentions
+// `<think>` before an unclosed `<precontext>` must split at the precontext.
 function openSideChannel(text: string): { tag: "think" | "precontext"; before: string; after: string } | null {
-  for (const tag of ["think", "precontext"] as const) {
-    const at = text.indexOf(`<${tag}>`);
-    if (at !== -1) return { tag, before: text.slice(0, at), after: text.slice(at + tag.length + 2) };
-  }
-  return null;
+  const found = (["think", "precontext"] as const)
+    .map((tag) => ({ tag, at: text.indexOf(`<${tag}>`) }))
+    .filter(({ at }) => at !== -1)
+    .sort((a, b) => a.at - b.at);
+  const first = found[0];
+  if (!first) return null;
+  return { tag: first.tag, before: text.slice(0, first.at), after: text.slice(first.at + first.tag.length + 2) };
 }
 
 /**
@@ -196,8 +200,10 @@ function rewriteContent(content: unknown): unknown {
 
 const PUBLIC_HEADERS: readonly string[] = [HEADER_SHOW_ADDITIONAL_INFO, HEADER_BYPASS_MOA, HEADER_BYPASS_CACHE];
 
-/** FNV-1a: no sync hash is available in every runtime this package runs in, and only
- *  distinctness matters here — the digest is never compared across processes. */
+/** FNV-1a: no sync cryptographic hash exists in every runtime this package runs in
+ *  (`node:crypto` is not available in browsers or edge workers). Not a security
+ *  boundary — a 32-bit digest cannot be reversed to a key, and the only property the
+ *  cache key and the LangSmith trace need is that two different values differ. */
 const digest = (value: string): string => {
   let hash = 0x811c9dc5;
   for (let i = 0; i < value.length; i += 1) hash = Math.imul(hash ^ value.charCodeAt(i), 0x01000193);
@@ -413,8 +419,9 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const flushed = filter.flush();
     const recovered = flushed ? { tail: flushed } : recoverTail(joined, emittedParts.join(""), finishReason === "length");
     const tail = recovered.tail;
-    const { precontext } = stripSideChannels(joined);
-    const reasoning = stripSideChannels(joined).reasoning || recovered.reasoning;
+    const stripped = stripSideChannels(joined);
+    const { precontext } = stripped;
+    const reasoning = stripped.reasoning || recovered.reasoning;
     if (tail) {
       const message = new AIMessageChunk({ content: tail, id: streamId });
       message.response_metadata.model_provider = PROVIDER;

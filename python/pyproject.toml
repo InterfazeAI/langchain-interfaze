@@ -47,6 +47,10 @@ packages = ["langchain_interfaze"]
 asyncio_mode = "auto"
 testpaths = ["tests/unit_tests"]
 addopts = ""
+filterwarnings = [
+  "error",
+  'ignore:Pydantic serializer warnings:UserWarning',
+]
 
 [tool.ruff]
 line-length = 110

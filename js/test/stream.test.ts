@@ -234,6 +234,22 @@ describe("streaming side-channel filter", () => {
     expect(text).not.toContain("123-45-6789");
   });
 
+  // Split at the earliest unmatched tag, not the first one we happen to look for. Tool
+  // JSON can quote the string `<think>`; scanning for think first would split there and
+  // leak the raw `<precontext>` — and the tool payload — into the answer.
+  it("splits at a truncated <precontext> that quotes <think>", async () => {
+    const chunks = [
+      chunk({ content: "Total is " }),
+      chunk({ content: '<precontext>[{"result":"page says <think> here","ssn":"123-45-6789"' }, "length"),
+    ];
+    const { model } = mockChat(() => sseResponse(chunks));
+    const got = await collect(model as never);
+    const text = got.map((c) => (typeof c.content === "string" ? c.content : "")).join("");
+    expect(text).toBe("Total is ");
+    expect(text).not.toContain("precontext");
+    expect(got.some((c) => String(c.additional_kwargs.reasoning ?? "").includes("123-45-6789"))).toBe(false);
+  });
+
   it("stamps the stream id on synthetic chunks", async () => {
     const chunks = [chunk({ content: "<think>r</think>Hi" }), chunk({}, "stop")];
     const { model } = mockChat(() => sseResponse(chunks));
