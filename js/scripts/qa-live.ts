@@ -65,7 +65,6 @@ const names = (m: AIMessage): string[] =>
   ((m.response_metadata.precontext as Array<{ name?: string }>) ?? []).map((p) => p?.name).filter((n): n is string => !!n);
 const text = (m: { content: unknown }) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content));
 
-// core
 await check("text generation", async () => {
   const res = await llm.invoke("Say hi in one short sentence.");
   assert(text(res).length > 0, "empty");
@@ -270,7 +269,6 @@ await check("rejects a video file_id client-side", async () => {
   throw new Error("file_id was accepted");
 });
 
-// input channels
 async function inputCheck(label: string, part: Record<string, unknown>, prompt: string) {
   await check(`input: ${label}`, async () => {
     const res = await llm.invoke([ask(prompt, part)]);

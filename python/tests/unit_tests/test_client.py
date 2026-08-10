@@ -11,7 +11,6 @@ from langchain_interfaze import ChatInterfaze
 from tests.unit_tests.conftest import BASIC, chunk, last_body, mock_json, mock_sse
 
 
-# defaults
 def test_defaults_point_at_interfaze() -> None:
     model = ChatInterfaze(api_key="t")
     assert model.openai_api_base == INTERFAZE_BASE_URL
@@ -65,7 +64,6 @@ def test_reasoning_kwarg_without_effort_is_dropped() -> None:
     assert "reasoning_effort" not in body
 
 
-# control-plane headers
 def test_control_headers() -> None:
     model = ChatInterfaze(
         api_key="t",

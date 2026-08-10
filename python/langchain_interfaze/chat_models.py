@@ -58,11 +58,12 @@ def _extract_side_fields(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _default_role(response: Any, field: str) -> None:
-    """Interfaze sends `role` on the first delta only, and omits it entirely on the
-    completion the beta stream assembles. The parent then builds a ChatMessage, which
-    pydantic rejects for role=None and which carries no additional_kwargs.
-    interfaze-python normalizes the same way (_stream.py). Handles both the dict and
-    the pydantic shape, since the two paths hand us different ones."""
+    """Default a missing `role` to assistant, in place.
+
+    Interfaze sends `role` on the first delta only. Without it the parent builds a
+    ChatMessage, which pydantic rejects for role=None and which carries no
+    additional_kwargs. Accepts dict and pydantic shapes; the two paths differ.
+    """
     choices = response.get("choices") if isinstance(response, dict) else getattr(response, "choices", None)
     for choice in choices or ():
         part = choice.get(field) if isinstance(choice, dict) else getattr(choice, field, None)
@@ -78,10 +79,11 @@ def _digest(value: str) -> str:
 
 
 def _redact_headers(headers: Mapping[str, str]) -> list[str]:
-    """`_identifying_params` reaches both the LLM cache key and the `invocation_params`
-    LangSmith records, so a caller's header value is fingerprinted rather than published.
-    Two values still differ, which is all the cache key needs. The flags we own are ours
-    to show."""
+    """Fingerprint caller header values; show only the flags this package owns.
+
+    `_identifying_params` reaches the LLM cache key and the `invocation_params` LangSmith
+    records, and distinctness is all the key needs.
+    """
     public = (_HEADER_SHOW_ADDITIONAL_INFO, _HEADER_BYPASS_MOA, _HEADER_BYPASS_CACHE)
     return [f"{k}={headers[k]}" if k in public else f"{k}#{_digest(headers[k])}" for k in sorted(headers)]
 
@@ -161,10 +163,8 @@ def _rewrite_video_blocks(content: Any) -> Any:
 
 
 def _fingerprint(key: str, value: Any) -> str:
-    """`precontext`/`reasoning` accumulate, so only an identical payload is a duplicate.
-
-    `vcache` is scalar state — merging two different values would sum them (bool is an int).
-    """
+    """`precontext`/`reasoning` accumulate, so only an identical payload is a duplicate;
+    `vcache` is scalar state, deduped by name because bool merges as int."""
     if key not in _ACCUMULATING_SIDE_FIELDS:
         return key
     return f"{key}:{json.dumps(value, sort_keys=True, default=str)}"
@@ -199,7 +199,6 @@ def _filter_stream_chunk(
 
 
 def _first_effort(*sources: Any) -> Any:
-    """Call-level `reasoning.effort`, then call `reasoning_effort`, then the model's."""
     for source in sources:
         effort = source.get("effort") if isinstance(source, dict) else source
         if effort is not None:
@@ -215,8 +214,8 @@ def _without_closed_blocks(raw: str) -> str:
 def _open_side_channel(text: str) -> tuple[str, str, str] | None:
     """Returns (tag, before, after) for the earliest unmatched opening tag.
 
-    Earliest by position, not by tag order: a truncated answer whose visible prose
-    mentions `<think>` before an unclosed `<precontext>` must split at the precontext.
+    Earliest by position, not tag order: a truncated answer whose prose mentions
+    `<think>` before an unclosed `<precontext>` must split at the precontext.
     """
     found = [(text.find(f"<{tag}>"), tag) for tag in ("think", "precontext")]
     candidates = [(at, tag) for at, tag in found if at != -1]
@@ -230,8 +229,8 @@ def _recover_tail(raw: str, emitted: str, truncated: bool) -> tuple[str, str | N
     """What the caller still owes, given what already streamed.
 
     An unmatched tag is prose in a completed response and an unclosed side channel in a
-    truncated one, so `finish_reason == "length"` decides. A partial `<think>` becomes
-    reasoning rather than content; a partial `<precontext>` is unparseable and dropped.
+    truncated one, so `truncated` decides. A partial `<think>` becomes reasoning; a
+    partial `<precontext>` is unparseable and dropped.
     """
     text = _without_closed_blocks(raw)
     open_tag = _open_side_channel(text) if truncated else None
@@ -281,8 +280,8 @@ class ChatInterfaze(ChatOpenAI):
     def lc_secrets(self) -> dict[str, str]:
         return {"openai_api_key": "INTERFAZE_API_KEY"}
 
-    # A provider-family id, not a model id — `interfaze-beta` reaches tracing and the LLM
-    # cache key via `ls_model_name` / `model_name`. Mirrors ChatOpenAI's "openai-chat".
+    # Provider family, not the model: `interfaze-beta` reaches tracing and the cache key
+    # via `ls_model_name` / `model_name`. Mirrors ChatOpenAI's "openai-chat".
     @property
     def _llm_type(self) -> str:
         return "interfaze"
@@ -299,6 +298,10 @@ class ChatInterfaze(ChatOpenAI):
         default_headers: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
+        """The three flags map to Interfaze control headers. `show_additional_info` is the
+        only way to get precontext while streaming; non-streaming responses always carry
+        it. `bypass_cache` matters when you need `reasoning`, which a cache hit omits.
+        """
         key = api_key or os.environ.get("INTERFAZE_API_KEY")
         if not key:
             raise InterfazeError(
@@ -336,8 +339,7 @@ class ChatInterfaze(ChatOpenAI):
         # Without these, set_llm_cache serves a bypass_cache model the plain model's answer,
         # and one tenant's key the answer cached under another's.
         params = {**super()._identifying_params, "_type": self._llm_type}
-        # A callable key is resolved per request, so there is no stable value to key on —
-        # the js package skips the fingerprint in that case too.
+        # A callable key resolves per request, so there is no stable value to key on.
         if isinstance(self.openai_api_key, SecretStr):
             params["interfaze_key"] = _digest(self.openai_api_key.get_secret_value())
         if self.default_headers:
@@ -364,8 +366,8 @@ class ChatInterfaze(ChatOpenAI):
             for m in messages
         ]
         payload = super()._get_request_payload(patched, stop=stop, **kwargs)
-        # Interfaze has no `reasoning` param; fold it into reasoning_effort using the same
-        # precedence as the JS package — a per-call value always beats a model-level one.
+        # Interfaze has no `reasoning` param; fold it into reasoning_effort. A per-call
+        # value always beats a model-level one.
         payload.pop("reasoning", None)
         effort = _first_effort(
             kwargs.get("reasoning"), kwargs.get("reasoning_effort"), self.reasoning, self.reasoning_effort
@@ -395,8 +397,8 @@ class ChatInterfaze(ChatOpenAI):
                 message.response_metadata["model_provider"] = _PROVIDER
                 _apply_side_fields(message, side)
                 _strip_tags(message, (generation.generation_info or {}).get("finish_reason") == "length")
-                # The streaming path keeps gen.text in step with the stripped content;
-                # without this, callbacks and the serialized cache carry the raw tags.
+                # gen.text feeds callbacks and the serialized cache, so keep it in step
+                # with the stripped content or both carry the raw tags.
                 if isinstance(message.content, str):
                     generation.text = message.content
         return result
@@ -436,6 +438,8 @@ class ChatInterfaze(ChatOpenAI):
         emitted: list[str] = []
         seen: set[str] = set()
         finish: Any = None
+        # run_manager is withheld deliberately: ChatOpenAI fires on_llm_new_token before
+        # yielding, so handlers would see unfiltered `<think>`. Fired below instead.
         for gen in super()._stream(messages, stop=stop, run_manager=None, **kwargs):
             _filter_stream_chunk(gen, filt, raw, emitted)
             _dedupe_side_fields(gen.message, seen)
@@ -463,6 +467,7 @@ class ChatInterfaze(ChatOpenAI):
         emitted: list[str] = []
         seen: set[str] = set()
         finish: Any = None
+        # See _stream: the manager is withheld so handlers never see unfiltered `<think>`.
         async for gen in super()._astream(messages, stop=stop, run_manager=None, **kwargs):
             _filter_stream_chunk(gen, filt, raw, emitted)
             _dedupe_side_fields(gen.message, seen)

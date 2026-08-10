@@ -88,7 +88,6 @@ def names(message: AIMessage) -> list[str]:
     return [p["name"] for p in entries if isinstance(p, dict) and p.get("name")]
 
 
-# core
 def text_generation() -> str:
     res = llm.invoke("Say hi in one short sentence.")
     _assert(res.content, "empty")

@@ -32,6 +32,8 @@ export type InterfazeReasoningEffort = "minimal" | "low" | "medium" | "high" | "
 export interface ChatInterfazeFields extends Omit<ChatOpenAIFields, "reasoningEffort"> {
   apiKey?: string;
   reasoningEffort?: InterfazeReasoningEffort;
+  /** Stream `<precontext>` deltas (`x-show-additional-info`); the only way to get
+   *  precontext while streaming, since non-streaming responses always carry it. */
   showAdditionalInfo?: boolean;
   /** Skip the mixture-of-architecture internal tool router (`x-interfaze-bypass-moa`). */
   bypassMoA?: boolean;
@@ -94,7 +96,7 @@ type SideChannelCarrier = {
 
 const carriesValue = (value: unknown): boolean => value !== undefined && value !== null && value !== "";
 
-/** Truthy, but an empty array counts as "present with no entries". */
+/** `[]` is truthy in JS, so a bare Boolean() would let an empty precontext block the real one. */
 const hasValue = (value: unknown): boolean => (Array.isArray(value) ? value.length > 0 : Boolean(value));
 
 const ACCUMULATING_SIDE_FIELDS: readonly string[] = ["precontext", "reasoning"];
@@ -130,12 +132,11 @@ function withoutClosedBlocks(raw: string): string {
 }
 
 /**
- * An unmatched tag means two different things. In a completed response it is prose the
- * model wrote (`"wrap it in <think> tags"`); in a truncated one it is a side channel the
- * server never got to close. `finish_reason: "length"` is the only reliable signal.
+ * Earliest unmatched opening tag, by position rather than tag order — a truncated answer
+ * whose prose mentions `<think>` before an unclosed `<precontext>` must split at the
+ * precontext. Callers gate on truncation: in a completed response an unmatched tag is
+ * prose the model wrote, not a channel the server failed to close.
  */
-// Earliest by position, not by tag order: a truncated answer whose visible prose mentions
-// `<think>` before an unclosed `<precontext>` must split at the precontext.
 function openSideChannel(text: string): { tag: "think" | "precontext"; before: string; after: string } | null {
   const found = (["think", "precontext"] as const)
     .map((tag) => ({ tag, at: text.indexOf(`<${tag}>`) }))
@@ -200,10 +201,8 @@ function rewriteContent(content: unknown): unknown {
 
 const PUBLIC_HEADERS: readonly string[] = [HEADER_SHOW_ADDITIONAL_INFO, HEADER_BYPASS_MOA, HEADER_BYPASS_CACHE];
 
-/** FNV-1a: no sync cryptographic hash exists in every runtime this package runs in
- *  (`node:crypto` is not available in browsers or edge workers). Not a security
- *  boundary — a 32-bit digest cannot be reversed to a key, and the only property the
- *  cache key and the LangSmith trace need is that two different values differ. */
+/** FNV-1a because no sync cryptographic hash exists in every runtime this package runs in.
+ *  Not a security boundary: distinctness is all the cache key and the trace need. */
 const digest = (value: string): string => {
   let hash = 0x811c9dc5;
   for (let i = 0; i < value.length; i += 1) hash = Math.imul(hash ^ value.charCodeAt(i), 0x01000193);
@@ -238,8 +237,8 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     return "ChatInterfaze";
   }
 
-  // A provider-family id, not a model id — `interfaze-beta` reaches tracing and the LLM
-  // cache key via `ls_model_name` / `model_name`. Mirrors ChatOpenAI's "openai-chat".
+  // Provider family, not the model: `interfaze-beta` reaches tracing and the cache key
+  // via `ls_model_name` / `model_name`. Mirrors ChatOpenAI's "openai-chat".
   override _llmType(): string {
     return "interfaze";
   }
@@ -277,9 +276,8 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     this._addVersion("@interfaze-ai/langchain", VERSION);
   }
 
-  // The parent spreads clientConfig wholesale, so the api key and every default header
-  // land verbatim in the llm cache key. Fingerprint them instead: two values still
-  // differ, which is all the key needs, and neither is published.
+  // The parent spreads clientConfig wholesale, landing the api key and every default
+  // header verbatim in the llm cache key. Fingerprint them instead.
   override _identifyingParams(): ReturnType<ChatOpenAICompletions["_identifyingParams"]> {
     const { apiKey, defaultHeaders, ...rest } = super._identifyingParams();
     return {
@@ -308,10 +306,9 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     return params;
   }
 
-  // Interfaze sends `role` on the first delta only. Defensive: if a stream ever opens
-  // without one, the parent picks ChatMessageChunk, which carries no additional_kwargs
-  // (so no __raw_response) and fails isAIMessage(). The core interfaze SDKs normalize
-  // the same way (interfaze-python _stream.py: `if not delta.role: delta.role = ...`).
+  // Interfaze sends `role` on the first delta only. If a stream ever opens without one the
+  // parent picks ChatMessageChunk, which fails isAIMessage() and carries no
+  // additional_kwargs, so __raw_response and every side field are lost.
   protected override _convertCompletionsDeltaToBaseMessageChunk(
     delta: Record<string, any>,
     rawResponse: any,
@@ -320,9 +317,8 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     return super._convertCompletionsDeltaToBaseMessageChunk(delta, rawResponse, defaultRole ?? "assistant");
   }
 
-  // The parent drops choice-less frames before building a chunk, so side fields riding a
-  // usage-only frame are invisible downstream. Observe the raw frames rather than
-  // reshaping them — injecting a choice would also duplicate the usage envelope.
+  // The parent drops choice-less frames, hiding side fields that ride a usage-only frame.
+  // Observed rather than reshaped: injecting a choice would duplicate the usage envelope.
   override async completionWithRetry(request: any, requestOptions?: any): Promise<any> {
     const result = await super.completionWithRetry(request, requestOptions);
     const sink = requestOptions && this.#frameSinks.get(requestOptions);
@@ -405,9 +401,8 @@ export class ChatInterfaze extends ChatOpenAICompletions {
         // message.content, so keep it in sync or callbacks see the raw tags.
         gen.text = filtered;
       }
-      // Envelope frames arrive interleaved with content, so emit them here rather than at
-      // stream end: python yields the same standalone chunk in the same position, and a
-      // consumer that breaks early still sees everything the server had already sent.
+      // Emitted inline rather than at stream end so a consumer that breaks early still
+      // sees what the server had already sent, matching python's chunk positions.
       for (const frame of frames.splice(0)) {
         const side = sideChunk(frame);
         if (side) yield side;
@@ -441,11 +436,10 @@ export class ChatInterfaze extends ChatOpenAICompletions {
   }
 
   /**
-   * Neither inherited implementation is usable as-is: the parent's reads the raw stream,
-   * so `<think>` leaks into the events, while `convertChunksToEvents` strips tags but
-   * hardcodes `reason: "stop"` and emits no `responseMetadata`. Convert our own stripped
-   * chunks, then put the metadata back on the terminal event so a v3 consumer sees what
-   * `invoke()` would have given it — including the side channels.
+   * Neither inherited implementation works: the parent reads the raw stream so `<think>`
+   * leaks into events, while `convertChunksToEvents` strips tags but hardcodes
+   * `reason: "stop"` and emits no `responseMetadata`. Convert our own filtered chunks and
+   * restore the metadata on the terminal event.
    */
   override async *_streamChatModelEvents(
     messages: BaseMessage[],
@@ -475,7 +469,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
         yield event;
         continue;
       }
-      // ...except the two fields emitted one chunk per source precisely so that
+      // ...except the accumulating fields, whose one-chunk-per-source emission exists so
       // langchain's merge concatenates them, which is what `.stream()` consumers see.
       for (const key of ACCUMULATING_SIDE_FIELDS) {
         const value = merged?.response_metadata[key];
