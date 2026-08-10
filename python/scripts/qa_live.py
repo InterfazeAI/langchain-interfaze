@@ -17,7 +17,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from langchain_interfaze import ChatInterfaze
+from interfaze_langchain import ChatInterfaze
 
 
 def load_key() -> str:

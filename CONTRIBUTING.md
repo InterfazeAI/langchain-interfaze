@@ -1,6 +1,6 @@
 # Contributing
 
-Two packages, one repo: [`python/`](./python) (`langchain-interfaze`) and [`js/`](./js) (`@interfaze-ai/langchain`). A change to one usually needs the same change to the other — the two are kept behaviourally identical.
+Two packages, one repo: [`python/`](./python) (`interfaze-langchain`) and [`js/`](./js) (`@interfaze/langchain`). A change to one usually needs the same change to the other — the two are kept behaviourally identical.
 
 ## Setup
 
@@ -49,7 +49,7 @@ Run both before cutting a release. They exercise paths the mocked suites cannot:
 
 ## Releasing
 
-Five files carry the version and must agree — `python/pyproject.toml`, `python/langchain_interfaze/_version.py`, `js/package.json`, `js/jsr.json`, `js/src/version.ts`. The last two reach users as a `User-Agent`.
+Five files carry the version and must agree — `python/pyproject.toml`, `python/interfaze_langchain/_version.py`, `js/package.json`, `js/jsr.json`, `js/src/version.ts`. The last two reach users as a `User-Agent`.
 
 ```bash
 node scripts/check-versions.mjs          # do the five agree?

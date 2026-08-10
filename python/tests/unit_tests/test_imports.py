@@ -1,4 +1,4 @@
-from langchain_interfaze import __all__
+from interfaze_langchain import __all__
 
 PUBLIC_EXPORTS = ["ChatInterfaze", "__version__"]
 

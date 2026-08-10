@@ -6,7 +6,7 @@ from typing import Any
 import respx
 from langchain_core.messages import HumanMessage
 
-from langchain_interfaze import ChatInterfaze
+from interfaze_langchain import ChatInterfaze
 from tests.unit_tests.conftest import BASIC, CUSTOM_FIELDS, INLINE_TAGS, mock_json
 
 

@@ -1,6 +1,6 @@
 # Interfaze LangChain SDK
 
-The official [LangChain](https://www.langchain.com) integration for [Interfaze](https://interfaze.ai), for both **Python** (`langchain-interfaze`) and **TypeScript / JavaScript** (`@interfaze-ai/langchain`).
+The official [LangChain](https://www.langchain.com) integration for [Interfaze](https://interfaze.ai), for both **Python** (`interfaze-langchain`) and **TypeScript / JavaScript** (`@interfaze/langchain`).
 
 [Docs](https://interfaze.ai/docs) · [limits](https://interfaze.ai/docs/limits) · [pricing](https://interfaze.ai/pricing) · [dashboard](https://interfaze.ai) · [Python SDK](https://github.com/InterfazeAI/interfaze-python) · [TypeScript / JavaScript SDK](https://github.com/InterfazeAI/interfaze-js)
 
@@ -11,13 +11,13 @@ The official [LangChain](https://www.langchain.com) integration for [Interfaze](
 Python:
 
 ```bash
-pip install langchain-interfaze
+pip install interfaze-langchain
 ```
 
 TypeScript / JavaScript:
 
 ```bash
-npm install @interfaze-ai/langchain
+npm install @interfaze/langchain
 ```
 
 The TS structured-output and tool examples use `zod` for schemas (`npm install zod`); it's an optional peer.
@@ -27,7 +27,7 @@ The TS structured-output and tool examples use `zod` for schemas (`npm install z
 Python:
 
 ```python
-from langchain_interfaze import ChatInterfaze
+from interfaze_langchain import ChatInterfaze
 
 llm = ChatInterfaze(api_key="sk_...")  # or set INTERFAZE_API_KEY and call ChatInterfaze()
 ```
@@ -35,7 +35,7 @@ llm = ChatInterfaze(api_key="sk_...")  # or set INTERFAZE_API_KEY and call ChatI
 TypeScript:
 
 ```ts
-import { ChatInterfaze } from "@interfaze-ai/langchain";
+import { ChatInterfaze } from "@interfaze/langchain";
 
 const llm = new ChatInterfaze({ apiKey: "sk_..." }); // or set INTERFAZE_API_KEY and call new ChatInterfaze()
 ```

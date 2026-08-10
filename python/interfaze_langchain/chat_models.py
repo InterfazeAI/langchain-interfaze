@@ -25,7 +25,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import SecretStr, model_validator
 from typing_extensions import Self
 
-from langchain_interfaze._version import __version__
+from interfaze_langchain._version import __version__
 
 _PROVIDER = "interfaze"
 
@@ -293,7 +293,7 @@ class ChatInterfaze(ChatOpenAI):
 
     @classmethod
     def get_lc_namespace(cls) -> list[str]:
-        return ["langchain_interfaze", "chat_models"]
+        return ["interfaze_langchain", "chat_models"]
 
     @property
     def lc_secrets(self) -> dict[str, str]:
@@ -350,7 +350,7 @@ class ChatInterfaze(ChatOpenAI):
     # them, so reusing the parent's name would drop its version entry.
     @model_validator(mode="after")
     def _set_interfaze_version(self) -> Self:
-        self._add_version("langchain-interfaze", __version__)
+        self._add_version("interfaze-langchain", __version__)
         return self
 
     @property

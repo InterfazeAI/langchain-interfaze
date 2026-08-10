@@ -24,7 +24,7 @@ describe("provider identity", () => {
 
   it("records its own package version alongside core's", () => {
     const versions = (model as unknown as { metadata?: { versions?: Record<string, string> } }).metadata?.versions ?? {};
-    expect(versions["@interfaze-ai/langchain"]).toBe(VERSION);
+    expect(versions["@interfaze/langchain"]).toBe(VERSION);
     expect(versions["@langchain/core"]).toBeTypeOf("string");
   });
 

@@ -4,7 +4,7 @@ from typing import Any
 
 from langchain_tests.unit_tests import ChatModelUnitTests
 
-from langchain_interfaze import ChatInterfaze
+from interfaze_langchain import ChatInterfaze
 
 
 class TestChatInterfazeUnit(ChatModelUnitTests):

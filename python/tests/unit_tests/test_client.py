@@ -7,7 +7,7 @@ import respx
 from interfaze import INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError
 from langchain_core.messages import HumanMessage
 
-from langchain_interfaze import ChatInterfaze
+from interfaze_langchain import ChatInterfaze
 from tests.unit_tests.conftest import BASIC, chunk, last_body, mock_json, mock_sse
 
 

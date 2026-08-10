@@ -13,7 +13,7 @@ from langchain_core.callbacks import (
 from langchain_core.messages import AIMessageChunk, HumanMessage
 from pydantic import BaseModel
 
-from langchain_interfaze import ChatInterfaze
+from interfaze_langchain import ChatInterfaze
 from tests.unit_tests.conftest import (
     PLAIN_STREAM,
     REPEATED_SIDE,

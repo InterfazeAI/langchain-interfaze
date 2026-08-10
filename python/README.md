@@ -7,8 +7,8 @@ The official [LangChain](https://python.langchain.com) integration for [Interfaz
 ## Install
 
 ```bash
-pip install langchain-interfaze
-# or: uv add langchain-interfaze · poetry add langchain-interfaze
+pip install interfaze-langchain
+# or: uv add interfaze-langchain · poetry add interfaze-langchain
 ```
 
 This pulls in the `interfaze` client and the LangChain packages it builds on.
@@ -16,7 +16,7 @@ This pulls in the `interfaze` client and the LangChain packages it builds on.
 ## Setup
 
 ```python
-from langchain_interfaze import ChatInterfaze
+from interfaze_langchain import ChatInterfaze
 
 llm = ChatInterfaze(api_key="sk_...")  # or set INTERFAZE_API_KEY and call ChatInterfaze()
 ```

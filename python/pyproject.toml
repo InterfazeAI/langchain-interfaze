@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "langchain-interfaze"
+name = "interfaze-langchain"
 version = "1.0.0"
 description = "Interfaze Langchain SDK"
 readme = "README.md"
@@ -41,7 +41,7 @@ lint = ["ruff==0.16.0"]
 typing = ["mypy==2.3.0"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["langchain_interfaze"]
+packages = ["interfaze_langchain"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -58,13 +58,13 @@ line-length = 110
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["langchain_interfaze", "scripts"]
+files = ["interfaze_langchain", "scripts"]
 
 [[tool.mypy.overrides]]
 module = ["langchain_openai.*", "langchain_core.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["langchain_interfaze.chat_models"]
+module = ["interfaze_langchain.chat_models"]
 disallow_subclassing_any = false
 warn_return_any = false

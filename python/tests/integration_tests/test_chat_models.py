@@ -7,7 +7,7 @@ import pytest
 from langchain_core.language_models import BaseChatModel
 from langchain_tests.integration_tests import ChatModelIntegrationTests
 
-from langchain_interfaze import ChatInterfaze
+from interfaze_langchain import ChatInterfaze
 
 
 class TestChatInterfazeIntegration(ChatModelIntegrationTests):

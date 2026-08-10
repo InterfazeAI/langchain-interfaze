@@ -6,7 +6,7 @@ from pathlib import Path
 import respx
 from langchain_core.messages import HumanMessage
 
-from langchain_interfaze import ChatInterfaze, __version__
+from interfaze_langchain import ChatInterfaze, __version__
 from tests.unit_tests.conftest import BASIC, mock_json
 
 
@@ -15,9 +15,9 @@ def test_provider_identity() -> None:
     assert model._llm_type == "interfaze"
     assert model._get_ls_params()["ls_provider"] == "interfaze"
     assert model.lc_secrets == {"openai_api_key": "INTERFAZE_API_KEY"}
-    assert model.get_lc_namespace() == ["langchain_interfaze", "chat_models"]
+    assert model.get_lc_namespace() == ["interfaze_langchain", "chat_models"]
     assert model.metadata is not None
-    assert "langchain-interfaze" in model.metadata["lc_versions"]
+    assert "interfaze-langchain" in model.metadata["lc_versions"]
 
 
 def test_version_matches_pyproject() -> None:

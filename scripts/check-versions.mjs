@@ -7,7 +7,7 @@ const match = (path, re) => (read(path).match(re) ?? [])[1];
 
 const versions = {
   "python/pyproject.toml": match("python/pyproject.toml", /^version = "(.+)"$/m),
-  "python/langchain_interfaze/_version.py": match("python/langchain_interfaze/_version.py", /^__version__ = "(.+)"$/m),
+  "python/interfaze_langchain/_version.py": match("python/interfaze_langchain/_version.py", /^__version__ = "(.+)"$/m),
   "js/package.json": JSON.parse(read("js/package.json")).version,
   "js/jsr.json": JSON.parse(read("js/jsr.json")).version,
   "js/src/version.ts": match("js/src/version.ts", /VERSION = "(.+)"/),

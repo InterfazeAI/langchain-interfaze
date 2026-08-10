@@ -278,7 +278,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     });
     this.lc_serializable = false;
     this.interfazeReasoningEffort = reasoningEffort;
-    this._addVersion("@interfaze-ai/langchain", VERSION);
+    this._addVersion("@interfaze/langchain", VERSION);
   }
 
   // The parent spreads clientConfig wholesale, landing the api key and every default

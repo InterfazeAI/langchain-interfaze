@@ -7,16 +7,16 @@ The official [LangChain](https://js.langchain.com) integration for [Interfaze](h
 ## Install
 
 ```bash
-npm install @interfaze-ai/langchain
-# or: yarn add @interfaze-ai/langchain · pnpm add @interfaze-ai/langchain · bun add @interfaze-ai/langchain
+npm install @interfaze/langchain
+# or: yarn add @interfaze/langchain · pnpm add @interfaze/langchain · bun add @interfaze/langchain
 ```
 
-`@langchain/openai`, `@langchain/core`, and `interfaze` are peer dependencies - `@interfaze-ai/langchain` builds `ChatInterfaze` on top of them. The structured-output and tool examples below use `zod` for schemas (`npm install zod`); it's an optional peer.
+`@langchain/openai`, `@langchain/core`, and `interfaze` are peer dependencies - `@interfaze/langchain` builds `ChatInterfaze` on top of them. The structured-output and tool examples below use `zod` for schemas (`npm install zod`); it's an optional peer.
 
 ## Setup
 
 ```ts
-import { ChatInterfaze } from "@interfaze-ai/langchain";
+import { ChatInterfaze } from "@interfaze/langchain";
 
 const llm = new ChatInterfaze({ apiKey: "sk_..." }); // or set INTERFAZE_API_KEY and call new ChatInterfaze()
 ```
