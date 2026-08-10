@@ -1,6 +1,6 @@
 # Contributing
 
-Two packages, one repo: [`python/`](./python) (`interfaze-langchain`) and [`js/`](./js) (`@interfaze/langchain`). A change to one usually needs the same change to the other — the two are kept behaviourally identical.
+Two packages, one repo: [`python/`](./python) (`interfaze-langchain`) and [`js/`](./js) (`@interfaze-ai/langchain`). A change to one usually needs the same change to the other — the two are kept behaviourally identical.
 
 ## Setup
 

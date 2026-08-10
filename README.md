@@ -1,6 +1,6 @@
 # Interfaze LangChain SDK
 
-The official [LangChain](https://www.langchain.com) integration for [Interfaze](https://interfaze.ai), for both **Python** (`interfaze-langchain`) and **TypeScript / JavaScript** (`@interfaze/langchain`).
+The official [LangChain](https://www.langchain.com) integration for [Interfaze](https://interfaze.ai), for both **Python** (`interfaze-langchain`) and **TypeScript / JavaScript** (`@interfaze-ai/langchain`).
 
 [Docs](https://interfaze.ai/docs) · [limits](https://interfaze.ai/docs/limits) · [pricing](https://interfaze.ai/pricing) · [dashboard](https://interfaze.ai) · [Python SDK](https://github.com/InterfazeAI/interfaze-python) · [TypeScript / JavaScript SDK](https://github.com/InterfazeAI/interfaze-js)
 
@@ -17,7 +17,7 @@ pip install interfaze-langchain
 TypeScript / JavaScript:
 
 ```bash
-npm install @interfaze/langchain
+npm install @interfaze-ai/langchain
 ```
 
 The TS structured-output and tool examples use `zod` for schemas (`npm install zod`); it's an optional peer.
@@ -35,7 +35,7 @@ llm = ChatInterfaze(api_key="sk_...")  # or set INTERFAZE_API_KEY and call ChatI
 TypeScript:
 
 ```ts
-import { ChatInterfaze } from "@interfaze/langchain";
+import { ChatInterfaze } from "@interfaze-ai/langchain";
 
 const llm = new ChatInterfaze({ apiKey: "sk_..." }); // or set INTERFAZE_API_KEY and call new ChatInterfaze()
 ```
