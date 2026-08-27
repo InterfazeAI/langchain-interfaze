@@ -27,10 +27,16 @@ const HEADER_SHOW_ADDITIONAL_INFO = "x-show-additional-info";
 const HEADER_BYPASS_MOA = "x-interfaze-bypass-moa";
 const HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache";
 
+/** How much Interfaze should reason before answering. Widens the parent's
+ *  `reasoningEffort` to the full set of levels Interfaze accepts. */
 export type InterfazeReasoningEffort = "minimal" | "low" | "medium" | "high" | "on" | "off" | "auto";
 
+/** Constructor options for {@link ChatInterfaze}. Extends the standard
+ *  `ChatOpenAIFields` with Interfaze-specific settings. */
 export interface ChatInterfazeFields extends Omit<ChatOpenAIFields, "reasoningEffort"> {
+  /** Interfaze API key. Falls back to the `INTERFAZE_API_KEY` environment variable. */
   apiKey?: string;
+  /** How hard the model should reason before answering. */
   reasoningEffort?: InterfazeReasoningEffort;
   /** Stream `<precontext>` deltas (`x-show-additional-info`); the only way to get
    *  precontext while streaming, since non-streaming responses always carry it. */
@@ -233,6 +239,22 @@ function buildHeaders(fields: ChatInterfazeFields): Record<string, string> | und
   return Object.keys(headers).length ? headers : undefined;
 }
 
+/**
+ * LangChain chat model backed by [Interfaze](https://interfaze.ai).
+ *
+ * Behaves like a standard LangChain chat model — invoke, stream, batch,
+ * `withStructuredOutput`, and tool calling all work — while pointing at the
+ * Interfaze endpoint and surfacing Interfaze's side channels (`precontext`,
+ * `reasoning`, `vcache`) on `response_metadata` and `additional_kwargs`.
+ *
+ * ```ts
+ * import { ChatInterfaze } from "@interfaze/langchain";
+ *
+ * const llm = new ChatInterfaze({ apiKey: "sk_..." });
+ * const res = await llm.invoke("Summarise the latest Interfaze release.");
+ * console.log(res.content);
+ * ```
+ */
 export class ChatInterfaze extends ChatOpenAICompletions {
   static override lc_name(): string {
     return "ChatInterfaze";

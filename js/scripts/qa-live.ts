@@ -18,8 +18,6 @@ function makeLlm(fields: Partial<ChatInterfazeFields> = {}): ChatInterfaze {
   return new ChatInterfaze({
     apiKey: loadKey(),
     maxRetries: 1,
-    // The library default is 900s; under the workflow's timeout-minutes: 30 a single
-    // hung call would kill the job before it printed anything.
     timeout: 180_000,
     ...fields,
     ...(BASE_URL ? { configuration: { baseURL: BASE_URL, ...fields.configuration } } : {}),
@@ -37,7 +35,6 @@ const ASSETS = {
   video: "https://download.samplelib.com/mp4/sample-5s.mp4",
   csv: "https://r2public.jigsawstack.com/interfaze/examples/prediction-example.csv",
   pdf: "https://arxiv.org/pdf/1706.03762",
-  // Converted to PDF server-side at ingestion, so no client-side handling exists to break.
   docx: "https://calibre-ebook.com/downloads/demos/demo.docx",
 };
 
