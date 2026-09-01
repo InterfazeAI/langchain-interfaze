@@ -125,4 +125,4 @@ jobs:
         with:
           node-version: "22.x"
       - run: npm ci
-      - run: npx jsr publish --allow-slow-types
+      - run: npx jsr publish
