@@ -1,6 +1,6 @@
 {
   "name": "@interfaze-ai/langchain",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Interfaze LangChain integration for TypeScript/JavaScript",
   "license": "MIT",
   "author": "InterfazeAI",
