@@ -146,9 +146,9 @@ describe("header values", () => {
 });
 
 describe("runtimes without process", () => {
-  it("builds a keyless model rather than throwing ReferenceError when process is absent", () => {
+  it("builds a keyless model when process and document are both absent", () => {
     const saved = globalThis.process;
-    // @ts-expect-error simulating a browser/edge bundle
+    // @ts-expect-error simulating an edge runtime: no process and no document
     delete globalThis.process;
     try {
       expect(() => new ChatInterfaze()).not.toThrow();

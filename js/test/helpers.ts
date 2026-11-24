@@ -9,10 +9,7 @@ export interface CapturedRequest {
   headers: Headers;
 }
 
-export function mockChat(
-  responder: (req: CapturedRequest) => Response,
-  extraFields: Partial<ChatInterfazeFields> = {}
-): { model: ChatInterfaze; calls: CapturedRequest[] } {
+export function recordingFetch(responder: (req: CapturedRequest) => Response): { fetch: typeof fetch; calls: CapturedRequest[] } {
   const calls: CapturedRequest[] = [];
   const fetchImpl = async (input: unknown, init: RequestInit = {}): Promise<Response> => {
     const url = typeof input === "string" ? input : (input as Request).url;
@@ -28,6 +25,14 @@ export function mockChat(
     calls.push(req);
     return responder(req);
   };
+  return { fetch: fetchImpl as unknown as typeof fetch, calls };
+}
+
+export function mockChat(
+  responder: (req: CapturedRequest) => Response,
+  extraFields: Partial<ChatInterfazeFields> = {}
+): { model: ChatInterfaze; calls: CapturedRequest[] } {
+  const { fetch: fetchImpl, calls } = recordingFetch(responder);
   const model = new ChatInterfaze({
     apiKey: "test-key",
     maxRetries: 0,

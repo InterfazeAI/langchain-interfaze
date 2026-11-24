@@ -5,7 +5,7 @@ import type { ChatModelStreamEvent, FinishReason } from "@langchain/core/languag
 import { AIMessage, AIMessageChunk, type BaseMessage, isAIMessage } from "@langchain/core/messages";
 import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
 import { concat } from "@langchain/core/utils/stream";
-import { ChatOpenAICompletions, type ChatOpenAIFields, type HeadersLike, normalizeHeaders } from "@langchain/openai";
+import { ChatOpenAICompletions, type ChatOpenAIFields, normalizeHeaders } from "@langchain/openai";
 import { INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError } from "interfaze";
 import { SideChannelFilter, stripSideChannels, TAG_RE } from "./side_channels.js";
 import { VERSION } from "./version.js";
@@ -29,9 +29,16 @@ const HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache";
 const HEADER_AUTHORIZATION = "authorization";
 
 // Satisfies openai-node, which refuses to build a client without a credential, on a model
-// with no Interfaze key. completionWithRetry removes the Authorization header that
+// with no Interfaze key. The fetch wrapper removes the Authorization header that
 // openai-node builds from it, so the value never leaves the process.
 const KEYLESS_CREDENTIAL = "interfaze-keyless";
+const KEYLESS_AUTHORIZATION = `Bearer ${KEYLESS_CREDENTIAL}`;
+
+const BROWSER_MESSAGE = "Interfaze does not accept keyless requests from a browser. Pass an API key to ChatInterfaze.";
+
+type ApiKey = NonNullable<ChatOpenAIFields["apiKey"]>;
+type ApiKeySetter = Exclude<ApiKey, string>;
+type FetchLike = NonNullable<NonNullable<ChatOpenAIFields["configuration"]>["fetch"]>;
 
 /** How much Interfaze should reason before answering. Widens the parent's
  *  `reasoningEffort` to the full set of levels Interfaze accepts. */
@@ -42,7 +49,8 @@ export type InterfazeReasoningEffort = "minimal" | "low" | "medium" | "high" | "
 export interface ChatInterfazeFields extends Omit<ChatOpenAIFields, "reasoningEffort"> {
   /** Interfaze API key. Falls back to the `INTERFAZE_API_KEY` environment variable. Without
    *  either, requests carry no `Authorization` header and use Interfaze's keyless access.
-   *  `OPENAI_API_KEY` is never read. */
+   *  A blank key counts as no key. `openAIApiKey` and `configuration.apiKey` also count as a
+   *  key. `OPENAI_API_KEY` is never read. */
   apiKey?: string;
   /** How hard the model should reason before answering. */
   reasoningEffort?: InterfazeReasoningEffort;
@@ -247,14 +255,34 @@ function buildHeaders(fields: ChatInterfazeFields): Record<string, string> | und
   return Object.keys(headers).length ? headers : undefined;
 }
 
+const isKeySetter = (value: unknown): value is ApiKeySetter => typeof value === "function";
+
+/** Trims a string key, so a blank string counts as unset. A function key passes through untouched. */
+function usableKey(value: unknown): ApiKey | undefined {
+  if (typeof value === "string") return value.trim() || undefined;
+  return isKeySetter(value) ? value : undefined;
+}
+
+// An explicit key beats INTERFAZE_API_KEY. Without `process` there is no environment key.
+function resolveKey(fields: ChatInterfazeFields): ApiKey | undefined {
+  const explicit = [fields.apiKey, fields.openAIApiKey, fields.configuration?.apiKey].map(usableKey).find((key) => key !== undefined);
+  return explicit ?? usableKey(typeof process !== "undefined" ? process.env?.INTERFAZE_API_KEY : undefined);
+}
+
 /**
- * Clears the Authorization header on one keyless request. A null value is how openai-node
- * omits a header on purpose, which also passes its credential check. It cannot go on the
- * client, because @langchain/openai keeps only string values in `defaultHeaders`. A header
- * the caller passes for this call still wins.
+ * Wraps `fetch` for a keyless model. openai-node builds `Authorization: Bearer interfaze-keyless`
+ * from the stand-in key; this removes exactly that value on every request the client sends, so
+ * raw clients, `withOptions` and moderations stay keyless too. Any other Authorization header
+ * passes through.
  */
-function withoutAuthorization(requestOptions: { headers?: HeadersLike } | undefined): Record<string, unknown> {
-  return { ...requestOptions, headers: { [HEADER_AUTHORIZATION]: null, ...normalizeHeaders(requestOptions?.headers) } };
+function withoutStandInKey(inner: FetchLike | undefined): FetchLike {
+  return (input, init) => {
+    const call = inner ?? globalThis.fetch;
+    if (!init?.headers) return call(input, init);
+    const headers = new Headers(init.headers);
+    if (headers.get(HEADER_AUTHORIZATION) === KEYLESS_AUTHORIZATION) headers.delete(HEADER_AUTHORIZATION);
+    return call(input, { ...init, headers });
+  };
 }
 
 /**
@@ -297,26 +325,38 @@ export class ChatInterfaze extends ChatOpenAICompletions {
   // completionWithRetry, so concurrent streams never share a sink.
   readonly #frameSinks = new WeakMap<object, Array<Record<string, unknown>>>();
 
-  readonly #keyless: boolean;
-
   constructor(fields: ChatInterfazeFields = {}) {
-    const { apiKey, model, configuration, timeout, showAdditionalInfo, bypassMoA, bypassCache, reasoningEffort, ...rest } = fields;
-    const key = apiKey || (typeof process !== "undefined" ? process.env?.INTERFAZE_API_KEY : undefined);
+    const {
+      apiKey: _apiKey,
+      openAIApiKey: _openAIApiKey,
+      model,
+      configuration,
+      timeout,
+      showAdditionalInfo,
+      bypassMoA,
+      bypassCache,
+      reasoningEffort,
+      ...rest
+    } = fields;
+    const key = resolveKey(fields);
     const defaultHeaders = buildHeaders(fields);
+    // A caller Authorization header counts as a key, so only a model with neither stays keyless.
+    if (key === undefined && !defaultHeaders?.[HEADER_AUTHORIZATION] && "document" in globalThis) throw new InterfazeError(BROWSER_MESSAGE);
     super({
       ...rest,
-      apiKey: key || KEYLESS_CREDENTIAL,
+      apiKey: key ?? KEYLESS_CREDENTIAL,
       model: model ?? INTERFAZE_MODEL,
       timeout: timeout ?? DEFAULT_TIMEOUT_MS,
       configuration: {
         baseURL: INTERFAZE_BASE_URL,
         ...configuration,
+        apiKey: key ?? KEYLESS_CREDENTIAL,
+        ...(key === undefined ? { fetch: withoutStandInKey(configuration?.fetch) } : {}),
         ...(defaultHeaders ? { defaultHeaders } : {}),
       },
       __includeRawResponse: true,
     });
     this.lc_serializable = false;
-    this.#keyless = !key;
     this.interfazeReasoningEffort = reasoningEffort;
     this._addVersion("@interfaze-ai/langchain", VERSION);
   }
@@ -365,7 +405,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
   // The parent drops choice-less frames, hiding side fields that ride a usage-only frame.
   // Observed rather than reshaped: injecting a choice would duplicate the usage envelope.
   override async completionWithRetry(request: any, requestOptions?: any): Promise<any> {
-    const result = await super.completionWithRetry(request, this.#keyless ? withoutAuthorization(requestOptions) : requestOptions);
+    const result = await super.completionWithRetry(request, requestOptions);
     const sink = requestOptions && this.#frameSinks.get(requestOptions);
     if (!request?.stream || !sink) return result;
     const frames = result as AsyncIterable<Record<string, unknown>>;
