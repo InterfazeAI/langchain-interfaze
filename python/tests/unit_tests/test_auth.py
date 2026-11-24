@@ -1,155 +1,192 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from typing import Any
 
-import httpx
 import pytest
 import respx
-from interfaze import AuthenticationError, RateLimitError
-from langchain_core.messages import HumanMessage
+from openai import Omit
+from pydantic import SecretStr
 
 from interfaze_langchain import ChatInterfaze
-from tests.unit_tests.conftest import BASIC, CHAT_URL, PLAIN_STREAM, mock_json, mock_sse
+from tests.unit_tests.api_mock import (
+    ALL_PATHS,
+    MESSAGES,
+    Call,
+    bearer,
+    mock_api,
+    sent_authorization,
+)
 
-ENV_KEY = "sk-env-synthetic"
-EXPLICIT_KEY = "sk-explicit-synthetic"
-OPENAI_KEY = "sk-openai-synthetic"
+ENV_KEY = "env-key-1"
+EXPLICIT_KEY = "explicit-key-2"
+FIELD_KEY = "field-key-3"
+OPENAI_KEY = "openai-key-4"
+NEW_KEY = "new-key-5"
+CALLER_TOKEN = "caller-token-6"
+CALLER_AUTH = bearer(CALLER_TOKEN)
 
-# Error bodies in the shape the API sends: a key it rejects, and a keyless caller over a daily limit.
-INVALID_KEY_BODY = {
-    "error": {
-        "message": "The API key provided is not valid or has been revoked",
-        "type": "permission_error",
-        "code": "insufficient_quota",
-        "request_id": "req-test",
-    }
-}
-KEYLESS_HINT = "Get a free API key at https://interfaze.ai"
-KEYLESS_LIMIT_BODY = {
-    "error": {
-        "message": f"Keyless daily limit of 50 requests reached. {KEYLESS_HINT} and send it as "
-        "`Authorization: Bearer <key>`.",
-        "type": "rate_limit_error",
-        "code": "keyless_daily_limit_exceeded",
-        "request_id": "req-test",
-    }
-}
-KEYLESS_LIMIT_HEADERS = {"retry-after": "3600", "x-ratelimit-limit": "50", "x-ratelimit-remaining": "0"}
+PATHS = pytest.mark.parametrize("path", ALL_PATHS.values(), ids=list(ALL_PATHS))
 
 
-@pytest.fixture(autouse=True)
-def _no_env_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("INTERFAZE_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+def _configure(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
+    [monkeypatch.setenv(name, value) for name, value in env.items()]
 
 
-async def _invoke(model: ChatInterfaze) -> None:
-    model.invoke([HumanMessage("hi")])
+def _keyless(id_: str, kwargs: dict[str, Any], env: dict[str, str]) -> Any:
+    return pytest.param(kwargs, env, id=id_)
 
 
-async def _ainvoke(model: ChatInterfaze) -> None:
-    await model.ainvoke([HumanMessage("hi")])
+def _keyed(id_: str, kwargs: dict[str, Any], env: dict[str, str], expected: str) -> Any:
+    return pytest.param(kwargs, env, expected, id=id_)
 
 
-async def _stream(model: ChatInterfaze) -> None:
-    list(model.stream([HumanMessage("hi")]))
-
-
-async def _astream(model: ChatInterfaze) -> None:
-    [chunk async for chunk in model.astream([HumanMessage("hi")])]
-
-
-Call = Callable[[ChatInterfaze], Awaitable[None]]
-
-CALLS = [
-    pytest.param(lambda: mock_json(BASIC), _invoke, id="invoke"),
-    pytest.param(lambda: mock_json(BASIC), _ainvoke, id="ainvoke"),
-    pytest.param(lambda: mock_sse(PLAIN_STREAM), _stream, id="stream"),
-    pytest.param(lambda: mock_sse(PLAIN_STREAM), _astream, id="astream"),
+KEYLESS = [
+    _keyless("no key", {}, {}),
+    _keyless("only OPENAI_API_KEY", {}, {"OPENAI_API_KEY": OPENAI_KEY}),
+    _keyless("empty api_key", {"api_key": ""}, {}),
+    _keyless("space api_key", {"api_key": " "}, {}),
+    _keyless("space-newline api_key", {"api_key": " \n"}, {}),
+    _keyless("blank SecretStr api_key", {"api_key": SecretStr(" ")}, {}),
+    _keyless("blank openai_api_key", {"openai_api_key": " "}, {}),
+    _keyless("empty SecretStr openai_api_key", {"openai_api_key": SecretStr("")}, {}),
+    _keyless("blank env", {}, {"INTERFAZE_API_KEY": " \n"}),
+    _keyless("empty env", {}, {"INTERFAZE_API_KEY": ""}),
+    _keyless("blank explicit and blank env", {"api_key": " "}, {"INTERFAZE_API_KEY": " "}),
+    _keyless("blank key and OPENAI_API_KEY", {"api_key": " "}, {"OPENAI_API_KEY": OPENAI_KEY}),
 ]
 
-ERROR_CALLS = [
-    pytest.param(call, id=call.__name__.lstrip("_")) for call in (_invoke, _ainvoke, _stream, _astream)
+BOTH_ENV = {"INTERFAZE_API_KEY": ENV_KEY, "OPENAI_API_KEY": OPENAI_KEY}
+KEYED = [
+    _keyed("env key", {}, {"INTERFAZE_API_KEY": ENV_KEY}, ENV_KEY),
+    _keyed("env key beside OPENAI_API_KEY", {}, BOTH_ENV, ENV_KEY),
+    _keyed("env key is trimmed", {}, {"INTERFAZE_API_KEY": f"  {ENV_KEY}\n"}, ENV_KEY),
+    _keyed("explicit beats env", {"api_key": EXPLICIT_KEY}, BOTH_ENV, EXPLICIT_KEY),
+    _keyed("explicit is trimmed", {"api_key": f" {EXPLICIT_KEY}\n"}, {}, EXPLICIT_KEY),
+    _keyed("api_key SecretStr", {"api_key": SecretStr(EXPLICIT_KEY)}, {}, EXPLICIT_KEY),
+    _keyed("openai_api_key str", {"openai_api_key": FIELD_KEY}, {}, FIELD_KEY),
+    _keyed("openai_api_key SecretStr", {"openai_api_key": SecretStr(FIELD_KEY)}, {}, FIELD_KEY),
+    _keyed("openai_api_key beats env", {"openai_api_key": FIELD_KEY}, BOTH_ENV, FIELD_KEY),
+    _keyed("empty api_key sends env", {"api_key": ""}, BOTH_ENV, ENV_KEY),
+    _keyed("space api_key sends env", {"api_key": " "}, BOTH_ENV, ENV_KEY),
+    _keyed("space-newline api_key sends env", {"api_key": " \n"}, BOTH_ENV, ENV_KEY),
+    _keyed("blank openai_api_key sends env", {"openai_api_key": " "}, BOTH_ENV, ENV_KEY),
 ]
 
 
-async def _sent_headers(mock: Callable[[], respx.Route], call: Call, model: ChatInterfaze) -> httpx.Headers:
-    route = mock()
-    await call(model)
-    return route.calls.last.request.headers
-
-
-def _mock_error(status: int, body: dict[str, Any], headers: dict[str, str] | None = None) -> respx.Route:
-    return respx.post(CHAT_URL).mock(return_value=httpx.Response(status, json=body, headers=headers))
+def _leaks_openai_key(route: respx.Route) -> bool:
+    return any(OPENAI_KEY in value for call in route.calls for value in call.request.headers.values())
 
 
 @respx.mock
-@pytest.mark.parametrize(("mock", "call"), CALLS)
-async def test_no_key_sends_no_authorization(mock: Callable[[], respx.Route], call: Call) -> None:
-    assert "authorization" not in await _sent_headers(mock, call, ChatInterfaze())
-
-
-@respx.mock
-@pytest.mark.parametrize(("mock", "call"), CALLS)
-async def test_no_key_ignores_openai_api_key(
-    monkeypatch: pytest.MonkeyPatch, mock: Callable[[], respx.Route], call: Call
+@PATHS
+@pytest.mark.parametrize(("kwargs", "env"), KEYLESS)
+async def test_keyless_request_has_no_authorization_header(
+    monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, Any], env: dict[str, str], path: Call
 ) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", OPENAI_KEY)
-    headers = await _sent_headers(mock, call, ChatInterfaze())
-    assert "authorization" not in headers
-    assert not any(OPENAI_KEY in value for value in headers.values())
+    route = mock_api()
+    _configure(monkeypatch, env)
+    await path(ChatInterfaze(**kwargs))
+    assert route.called
+    assert sent_authorization(route) == [[]] * route.call_count
+    assert not _leaks_openai_key(route)
 
 
 @respx.mock
-def test_no_key_keeps_caller_request_headers() -> None:
-    route = mock_json(BASIC)
-    ChatInterfaze().invoke([HumanMessage("hi")], extra_headers={"x-trace": "1"})
-    headers = route.calls.last.request.headers
-    assert headers["x-trace"] == "1"
-    assert "authorization" not in headers
-
-
-@respx.mock
-@pytest.mark.parametrize(("mock", "call"), CALLS)
-async def test_env_key_authorizes(
-    monkeypatch: pytest.MonkeyPatch, mock: Callable[[], respx.Route], call: Call
+@PATHS
+@pytest.mark.parametrize(("kwargs", "env", "expected"), KEYED)
+async def test_key_is_sent_as_the_only_authorization_header(
+    monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, Any], env: dict[str, str], expected: str, path: Call
 ) -> None:
-    monkeypatch.setenv("INTERFAZE_API_KEY", ENV_KEY)
-    monkeypatch.setenv("OPENAI_API_KEY", OPENAI_KEY)
-    headers = await _sent_headers(mock, call, ChatInterfaze())
-    assert headers["authorization"] == f"Bearer {ENV_KEY}"
+    route = mock_api()
+    _configure(monkeypatch, env)
+    await path(ChatInterfaze(**kwargs))
+    assert route.called
+    assert sent_authorization(route) == [[bearer(expected)]] * route.call_count
+    assert not _leaks_openai_key(route)
 
 
 @respx.mock
-@pytest.mark.parametrize(("mock", "call"), CALLS)
-async def test_explicit_key_beats_env_key(
-    monkeypatch: pytest.MonkeyPatch, mock: Callable[[], respx.Route], call: Call
+async def test_key_callable_passes_through_untouched() -> None:
+    route = mock_api()
+    model = ChatInterfaze(openai_api_key=lambda: EXPLICIT_KEY)
+    model.invoke(MESSAGES)
+    await model.ainvoke(MESSAGES)
+    assert sent_authorization(route) == [[bearer(EXPLICIT_KEY)]] * 2
+
+
+CALLER_CASES = ["Authorization", "authorization", "AUTHORIZATION"]
+KEY_SETUPS = [
+    _keyless("no key", {}, {}),
+    _keyless("api_key", {"api_key": EXPLICIT_KEY}, {}),
+    _keyless("env key", {}, {"INTERFAZE_API_KEY": ENV_KEY}),
+]
+
+
+@respx.mock
+@PATHS
+@pytest.mark.parametrize(("kwargs", "env"), KEY_SETUPS)
+@pytest.mark.parametrize("case", CALLER_CASES)
+async def test_caller_default_authorization_header_is_the_only_one_sent(
+    monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, Any], env: dict[str, str], case: str, path: Call
 ) -> None:
-    monkeypatch.setenv("INTERFAZE_API_KEY", ENV_KEY)
-    headers = await _sent_headers(mock, call, ChatInterfaze(api_key=EXPLICIT_KEY))
-    assert headers["authorization"] == f"Bearer {EXPLICIT_KEY}"
+    route = mock_api()
+    _configure(monkeypatch, env)
+    await path(ChatInterfaze(default_headers={case: CALLER_AUTH}, **kwargs))
+    assert route.called
+    assert sent_authorization(route) == [[CALLER_AUTH]] * route.call_count
 
 
 @respx.mock
-@pytest.mark.parametrize("call", ERROR_CALLS)
-async def test_rejected_key_raises_401_without_a_keyless_retry(call: Call) -> None:
-    route = _mock_error(401, INVALID_KEY_BODY)
-    with pytest.raises(AuthenticationError) as caught:
-        await call(ChatInterfaze(api_key=EXPLICIT_KEY, max_retries=2))
-    assert caught.value.status_code == 401
-    assert caught.value.code == "insufficient_quota"
-    assert [c.request.headers.get("authorization") for c in route.calls] == [f"Bearer {EXPLICIT_KEY}"]
+@pytest.mark.parametrize("kwargs", [{}, {"api_key": EXPLICIT_KEY}], ids=["no key", "api_key"])
+@pytest.mark.parametrize("case", CALLER_CASES)
+async def test_caller_request_authorization_header_is_the_only_one_sent(
+    kwargs: dict[str, Any], case: str
+) -> None:
+    route = mock_api()
+    model = ChatInterfaze(**kwargs)
+    model.invoke(MESSAGES, extra_headers={case: CALLER_AUTH})
+    await model.ainvoke(MESSAGES, extra_headers={case: CALLER_AUTH})
+    model.root_client.models.list(extra_headers={case: CALLER_AUTH})
+    await model.root_async_client.models.list(extra_headers={case: CALLER_AUTH})
+    assert sent_authorization(route) == [[CALLER_AUTH]] * 4
 
 
 @respx.mock
-@pytest.mark.parametrize("call", ERROR_CALLS)
-async def test_keyless_limit_raises_429_with_the_key_hint(call: Call) -> None:
-    route = _mock_error(429, KEYLESS_LIMIT_BODY, KEYLESS_LIMIT_HEADERS)
-    with pytest.raises(RateLimitError) as caught:
-        await call(ChatInterfaze(max_retries=0))
-    assert caught.value.status_code == 429
-    assert caught.value.code == "keyless_daily_limit_exceeded"
-    assert KEYLESS_HINT in caught.value.message
-    assert caught.value.response.headers["retry-after"] == "3600"
-    assert "authorization" not in route.calls.last.request.headers
+@pytest.mark.parametrize("case", CALLER_CASES)
+async def test_request_authorization_header_beats_default_header(case: str) -> None:
+    route = mock_api()
+    model = ChatInterfaze(default_headers={"Authorization": bearer("default-token")})
+    model.root_client.models.list(extra_headers={case: CALLER_AUTH})
+    await model.root_async_client.models.list(extra_headers={case: CALLER_AUTH})
+    assert sent_authorization(route) == [[CALLER_AUTH]] * 2
+
+
+@respx.mock
+async def test_omitted_request_header_leaves_the_caller_default_header_as_the_only_one() -> None:
+    route = mock_api()
+    model = ChatInterfaze(api_key=EXPLICIT_KEY, default_headers={"authorization": CALLER_AUTH})
+    model.root_client.models.list(extra_headers={"AUTHORIZATION": Omit()})
+    await model.root_async_client.models.list(extra_headers={"AUTHORIZATION": Omit()})
+    assert sent_authorization(route) == [[CALLER_AUTH]] * 2
+
+
+@respx.mock
+@pytest.mark.parametrize("derive", ["with_options", "copy"])
+async def test_new_key_on_a_keyless_client_is_sent(derive: str) -> None:
+    route = mock_api()
+    model = ChatInterfaze()
+    getattr(model.root_client, derive)(api_key=NEW_KEY).models.list()
+    await getattr(model.root_async_client, derive)(api_key=NEW_KEY).models.list()
+    assert sent_authorization(route) == [[bearer(NEW_KEY)]] * 2
+
+
+@respx.mock
+async def test_client_derived_without_a_new_key_stays_keyless() -> None:
+    route = mock_api()
+    ChatInterfaze().root_client.with_options(max_retries=0).copy(timeout=5).models.list()
+    assert sent_authorization(route) == [[]]
+
+
+def test_raw_clients_exist_without_a_key() -> None:
+    model = ChatInterfaze()
+    assert None not in (model.root_client, model.client, model.root_async_client, model.async_client)

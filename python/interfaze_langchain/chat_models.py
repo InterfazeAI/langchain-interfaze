@@ -4,9 +4,10 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from typing import Any, NamedTuple
 
+import httpx
 from interfaze import (
     INTERFAZE_BASE_URL,
     INTERFAZE_MODEL,
@@ -22,7 +23,7 @@ from langchain_core.language_models import LanguageModelInput
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_openai import ChatOpenAI
-from openai import Omit
+from openai import AsyncOpenAI, OpenAI
 from pydantic import SecretStr, model_validator
 from typing_extensions import Self
 
@@ -36,6 +37,13 @@ _HEADER_SHOW_ADDITIONAL_INFO = "x-show-additional-info"
 _HEADER_BYPASS_MOA = "x-interfaze-bypass-moa"
 _HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache"
 _HEADER_AUTHORIZATION = "authorization"
+_HEADER_RETRY_AFTER = "retry-after"
+
+_ENV_API_KEY = "INTERFAZE_API_KEY"
+_DAILY_LIMIT_CODE = "keyless_daily_limit_exceeded"
+# A keyless 429 that asks for a longer wait than this is the daily limit.
+_DAILY_LIMIT_MIN_RETRY_AFTER = 60
+_HTTP_TOO_MANY_REQUESTS = 429
 
 _SIDE_FIELDS = ("precontext", "reasoning", "vcache")
 
@@ -76,6 +84,10 @@ def _default_role(response: Any, part_key: str) -> None:
             part.role = "assistant"
 
 
+_ResolvedKey = SecretStr | Callable[[], str] | Callable[[], Awaitable[str]]
+_ApiKey = str | _ResolvedKey | None
+
+
 def _keyless_api_key() -> str:
     """Stands in for the key on a model with no Interfaze key.
 
@@ -83,6 +95,89 @@ def _keyless_api_key() -> str:
     Authorization header from the empty string the callable returns.
     """
     return ""
+
+
+def _trim_key(key: Any) -> Any:
+    """Trim a string key; a blank key becomes empty. A callable passes through untouched."""
+    text = key.get_secret_value() if isinstance(key, SecretStr) else key
+    return text.strip() if isinstance(text, str) else text
+
+
+def _resolve_key(*explicit: _ApiKey) -> _ResolvedKey | None:
+    """The first usable key: an explicit one, then INTERFAZE_API_KEY, else None (keyless)."""
+    candidates = (*(_trim_key(key) for key in explicit), _trim_key(os.environ.get(_ENV_API_KEY)))
+    key = next((candidate for candidate in candidates if candidate), None)
+    return SecretStr(key) if isinstance(key, str) else key
+
+
+def _retry_after_seconds(response: httpx.Response) -> float:
+    try:
+        return float(response.headers.get(_HEADER_RETRY_AFTER, ""))
+    except ValueError:
+        return 0.0
+
+
+def _is_keyless_daily_limit(response: httpx.Response) -> bool:
+    """Whether a keyless request got the daily-limit 429, which no retry can fix.
+
+    The body code decides. A streamed async response has no readable body before the retry
+    decision, so a long `Retry-After` stands in for the code there.
+    """
+    if response.status_code != _HTTP_TOO_MANY_REQUESTS or _HEADER_AUTHORIZATION in response.request.headers:
+        return False
+    try:
+        response.read()
+        body = response.json()
+    except RuntimeError:
+        return _retry_after_seconds(response) > _DAILY_LIMIT_MIN_RETRY_AFTER
+    except ValueError:
+        return False
+    error = body.get("error") if isinstance(body, dict) else None
+    return isinstance(error, dict) and error.get("code") == _DAILY_LIMIT_CODE
+
+
+def _single_authorization(headers: httpx.Headers, caller: Mapping[str, Any]) -> httpx.Headers:
+    """Keep only the caller's Authorization header when the key adds a second one.
+
+    The SDK merges headers by exact name, so `authorization` from the caller and
+    `Authorization` from the key both reach the wire. The last caller header wins.
+    """
+    values = [
+        value
+        for name, value in caller.items()
+        if name.lower() == _HEADER_AUTHORIZATION and isinstance(value, str)
+    ]
+    if len(headers.get_list(_HEADER_AUTHORIZATION)) < 2:
+        return headers
+    others = [(name, value) for name, value in headers.multi_items() if name.lower() != _HEADER_AUTHORIZATION]
+    return httpx.Headers([*others, (_HEADER_AUTHORIZATION, values[-1])])
+
+
+# The two clients below replace the plain OpenAI clients that ChatOpenAI builds, so every
+# path through `root_client`, `client`, `async_client`, `with_options` and `copy` shares them.
+class _InterfazeOpenAI(OpenAI):
+    # openai-python refuses a request with no Authorization header. Interfaze accepts it.
+    def _validate_headers(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def _should_retry(self, response: httpx.Response) -> bool:
+        return not _is_keyless_daily_limit(response) and super()._should_retry(response)
+
+    def _build_headers(self, options: Any, *, retries_taken: int = 0) -> httpx.Headers:
+        headers = super()._build_headers(options, retries_taken=retries_taken)
+        return _single_authorization(headers, {**self._custom_headers, **(options.headers or {})})
+
+
+class _InterfazeAsyncOpenAI(AsyncOpenAI):
+    def _validate_headers(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def _should_retry(self, response: httpx.Response) -> bool:
+        return not _is_keyless_daily_limit(response) and super()._should_retry(response)
+
+    def _build_headers(self, options: Any, *, retries_taken: int = 0) -> httpx.Headers:
+        headers = super()._build_headers(options, retries_taken=retries_taken)
+        return _single_authorization(headers, {**self._custom_headers, **(options.headers or {})})
 
 
 def _digest(value: str) -> str:
@@ -319,7 +414,7 @@ class ChatInterfaze(ChatOpenAI):
     def __init__(
         self,
         *,
-        api_key: str | None = None,
+        api_key: _ApiKey = None,
         base_url: str | None = None,
         model: str | None = None,
         show_additional_info: bool = False,
@@ -332,10 +427,11 @@ class ChatInterfaze(ChatOpenAI):
         only way to get precontext while streaming; non-streaming responses always carry
         it. `bypass_cache` matters when you need `reasoning`, which a cache hit omits.
 
-        Without `api_key` and `INTERFAZE_API_KEY`, requests carry no Authorization header and
-        use Interfaze's keyless access. `OPENAI_API_KEY` is never read.
+        The key is `api_key`, then `openai_api_key`, then `INTERFAZE_API_KEY`. A blank string
+        is not a key. Without a key, requests carry no Authorization header and use
+        Interfaze's keyless access. `OPENAI_API_KEY` is never read.
         """
-        key = api_key or os.environ.get("INTERFAZE_API_KEY")
+        key = _resolve_key(api_key, kwargs.pop("openai_api_key", None))
         headers = {k.lower(): str(v) for k, v in (default_headers or {}).items()}
         if show_additional_info:
             headers[_HEADER_SHOW_ADDITIONAL_INFO] = "true"
@@ -348,7 +444,7 @@ class ChatInterfaze(ChatOpenAI):
         kwargs.setdefault("stream_usage", True)
         kwargs["use_responses_api"] = False
         super().__init__(
-            api_key=SecretStr(key) if key else _keyless_api_key,
+            api_key=key or _keyless_api_key,
             base_url=base_url or INTERFAZE_BASE_URL,
             model=model or INTERFAZE_MODEL,
             default_headers=headers or None,
@@ -360,6 +456,15 @@ class ChatInterfaze(ChatOpenAI):
     @model_validator(mode="after")
     def _set_interfaze_version(self) -> Self:
         self._add_version("interfaze-langchain", __version__)
+        return self
+
+    @model_validator(mode="after")
+    def _use_interfaze_clients(self) -> Self:
+        # The parent builds plain OpenAI clients; a client the caller passes in stays as given.
+        if type(self.root_client) is OpenAI:
+            self.root_client.__class__ = _InterfazeOpenAI
+        if type(self.root_async_client) is AsyncOpenAI:
+            self.root_async_client.__class__ = _InterfazeAsyncOpenAI
         return self
 
     @property
@@ -402,10 +507,6 @@ class ChatInterfaze(ChatOpenAI):
         )
         if effort is not None:
             payload["reasoning_effort"] = effort
-        # The SDK refuses a request without an Authorization header unless the request
-        # omits it on purpose. A header the caller passes for this call still wins.
-        if self.openai_api_key is _keyless_api_key:
-            payload["extra_headers"] = {_HEADER_AUTHORIZATION: Omit(), **(payload.get("extra_headers") or {})}
         return payload
 
     def _create_chat_result(

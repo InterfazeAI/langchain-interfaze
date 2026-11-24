@@ -6,10 +6,19 @@ import operator
 from typing import Any
 
 import httpx
+import pytest
 import respx
 
 CHAT_URL = "https://api.interfaze.ai/v1/chat/completions"
 VIDEO_URL = "https://download.samplelib.com/mp4/sample-5s.mp4"
+
+
+@pytest.fixture(autouse=True)
+def _no_env_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test reads a key from the machine it runs on."""
+    monkeypatch.delenv("INTERFAZE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
 
 _USAGE = {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
 
