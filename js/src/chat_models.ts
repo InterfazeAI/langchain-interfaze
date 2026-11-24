@@ -34,7 +34,7 @@ const HEADER_AUTHORIZATION = "authorization";
 const KEYLESS_CREDENTIAL = "interfaze-keyless";
 const KEYLESS_AUTHORIZATION = `Bearer ${KEYLESS_CREDENTIAL}`;
 
-const BROWSER_MESSAGE = "Interfaze does not accept keyless requests from a browser. Pass an API key to ChatInterfaze.";
+const BROWSER_MESSAGE = "Interfaze does not accept keyless requests from a browser. Pass an API key: `new ChatInterfaze({ apiKey })`.";
 
 type ApiKey = NonNullable<ChatOpenAIFields["apiKey"]>;
 type ApiKeySetter = Exclude<ApiKey, string>;
