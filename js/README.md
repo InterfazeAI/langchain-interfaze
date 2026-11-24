@@ -23,9 +23,13 @@ const llm = new ChatInterfaze({ apiKey: "sk_..." }); // or set INTERFAZE_API_KEY
 
 `ChatInterfaze` is a standard LangChain chat model, so the usual options (`temperature`, `maxTokens`, `timeout`, `reasoningEffort`, …) are forwarded; `configuration.baseURL` and `model` default to the Interfaze endpoint and `interfaze-beta`.
 
-You can try Interfaze without an API key. When you pass no `apiKey` and `INTERFAZE_API_KEY` is not set, `ChatInterfaze` sends requests without an `Authorization` header. Interfaze then applies its [keyless limits](https://interfaze.ai/docs/limits#keyless-access) to your IP address. `ChatInterfaze` does not read `OPENAI_API_KEY`. Keyless access is intended for agent use, so call it from server-side code: a keyless request from a browser will receive a `403` error. To learn more, read [Try Interfaze without an API key](https://interfaze.ai/docs#try-interfaze-without-an-api-key).
+Without an API key, `ChatInterfaze` sends requests with no `Authorization` header. This works only from server-side code. Interfaze limits keyless requests from each IP address and does not accept them from a browser. A blank key counts as no key. See [Try Interfaze without an API key](https://interfaze.ai/docs#try-interfaze-without-an-api-key) and the [keyless limits](https://interfaze.ai/docs/limits#keyless-access).
 
-Keyless calls need a release of `@interfaze-ai/langchain` later than 1.0.0.
+`ChatInterfaze` does not read `OPENAI_API_KEY`. `apiKey`, `openAIApiKey` and `configuration.apiKey` all count as a key, and a function in `configuration.apiKey` passes through as it is. An `Authorization` header in `configuration.defaultHeaders` is sent as it is.
+
+Keyless access needs a release of `@interfaze-ai/langchain` later than 1.0.0.
+
+When the keyless daily limit is reached, the client throws the `429` at once and does not retry it. LangChain's caller retries a keyless in-flight `429` (code `keyless_inflight_limit_exceeded`), and `maxRetries` controls how many times.
 
 ## Your first request
 
@@ -251,7 +255,7 @@ For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tas
 import { BadRequestError, InterfazeError, RateLimitError } from "interfaze";
 ```
 
-`ChatInterfaze` raises `InterfazeError` for client-side problems, for example a `file_id` content block. Everything else is an `APIError` subclass carrying `status` and `code` - `BadRequestError` (400), `AuthenticationError` (401), `RateLimitError` (429), and so on. When the API rejects your key, you get a `401` error, and `ChatInterfaze` does not send the call again without the key. When a keyless call reaches a limit, you get a `429` error with a message that tells you how to get a key.
+`ChatInterfaze` raises `InterfazeError` for client-side problems, for example a `file_id` content block or a keyless model in a browser. Everything else is an `APIError` subclass carrying `status` and `code` - `BadRequestError` (400), `AuthenticationError` (401), `RateLimitError` (429), and so on. When the API rejects your key, you get a `401` error, and `ChatInterfaze` does not send the call again without the key. When a keyless call reaches a limit, you get a `429` error with a message that tells you how to get a key. `@langchain/openai` and `interfaze` can install separate copies of `openai`, so `instanceof RateLimitError` can fail for an error from `ChatInterfaze`: check `error.status` and `error.code` instead.
 
 ## Capabilities
 
