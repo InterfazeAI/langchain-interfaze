@@ -23,9 +23,11 @@ llm = ChatInterfaze(api_key="sk_...")  # or set INTERFAZE_API_KEY and call ChatI
 
 `ChatInterfaze` is a standard LangChain chat model, so the usual keywords (`temperature`, `max_tokens`, `timeout`, `reasoning_effort`, …) are forwarded; `base_url` and `model` default to the Interfaze endpoint and `interfaze-beta`.
 
-You can try Interfaze without an API key. When you pass no `api_key` and `INTERFAZE_API_KEY` is not set, `ChatInterfaze` sends requests without an `Authorization` header. Interfaze then applies its [keyless limits](https://interfaze.ai/docs/limits#keyless-access) to your IP address. `ChatInterfaze` does not read `OPENAI_API_KEY`. Keyless access is intended for agent use, so call it from server-side code: a keyless request from a browser will receive a `403` error. To learn more, read [Try Interfaze without an API key](https://interfaze.ai/docs#try-interfaze-without-an-api-key).
+Without an API key, `ChatInterfaze` sends requests with no `Authorization` header. This works only from server-side code. Interfaze limits keyless requests from each IP address and does not accept them from a browser. A blank key counts as no key. See [Try Interfaze without an API key](https://interfaze.ai/docs#try-interfaze-without-an-api-key) and the [keyless limits](https://interfaze.ai/docs/limits#keyless-access).
 
-Keyless calls need a release of `interfaze-langchain` later than 1.0.0.
+Keyless access needs a release of `interfaze-langchain` later than 1.0.0. `ChatInterfaze` does not read `OPENAI_API_KEY`.
+
+When the keyless daily limit is reached, the client throws the `429` at once and does not retry it.
 
 ## Your first request
 
