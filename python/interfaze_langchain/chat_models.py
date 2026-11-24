@@ -22,6 +22,7 @@ from langchain_core.language_models import LanguageModelInput
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_openai import ChatOpenAI
+from openai import Omit
 from pydantic import SecretStr, model_validator
 from typing_extensions import Self
 
@@ -34,6 +35,7 @@ _DEFAULT_TIMEOUT = 900.0
 _HEADER_SHOW_ADDITIONAL_INFO = "x-show-additional-info"
 _HEADER_BYPASS_MOA = "x-interfaze-bypass-moa"
 _HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache"
+_HEADER_AUTHORIZATION = "authorization"
 
 _SIDE_FIELDS = ("precontext", "reasoning", "vcache")
 
@@ -72,6 +74,15 @@ def _default_role(response: Any, part_key: str) -> None:
                 part["role"] = "assistant"
         elif part is not None and not getattr(part, "role", None):
             part.role = "assistant"
+
+
+def _keyless_api_key() -> str:
+    """Stands in for the key on a model with no Interfaze key.
+
+    The OpenAI SDK rejects an empty string key but accepts a callable, and it builds no
+    Authorization header from the empty string the callable returns.
+    """
+    return ""
 
 
 def _digest(value: str) -> str:
@@ -320,13 +331,11 @@ class ChatInterfaze(ChatOpenAI):
         """The three flags map to Interfaze control headers. `show_additional_info` is the
         only way to get precontext while streaming; non-streaming responses always carry
         it. `bypass_cache` matters when you need `reasoning`, which a cache hit omits.
+
+        Without `api_key` and `INTERFAZE_API_KEY`, requests carry no Authorization header and
+        use Interfaze's keyless access. `OPENAI_API_KEY` is never read.
         """
         key = api_key or os.environ.get("INTERFAZE_API_KEY")
-        if not key:
-            raise InterfazeError(
-                "Missing API key. Pass ChatInterfaze(api_key=...) or set the INTERFAZE_API_KEY "
-                "environment variable."
-            )
         headers = {k.lower(): str(v) for k, v in (default_headers or {}).items()}
         if show_additional_info:
             headers[_HEADER_SHOW_ADDITIONAL_INFO] = "true"
@@ -339,7 +348,7 @@ class ChatInterfaze(ChatOpenAI):
         kwargs.setdefault("stream_usage", True)
         kwargs["use_responses_api"] = False
         super().__init__(
-            api_key=SecretStr(key),
+            api_key=SecretStr(key) if key else _keyless_api_key,
             base_url=base_url or INTERFAZE_BASE_URL,
             model=model or INTERFAZE_MODEL,
             default_headers=headers or None,
@@ -393,6 +402,10 @@ class ChatInterfaze(ChatOpenAI):
         )
         if effort is not None:
             payload["reasoning_effort"] = effort
+        # The SDK refuses a request without an Authorization header unless the request
+        # omits it on purpose. A header the caller passes for this call still wins.
+        if self.openai_api_key is _keyless_api_key:
+            payload["extra_headers"] = {_HEADER_AUTHORIZATION: Omit(), **(payload.get("extra_headers") or {})}
         return payload
 
     def _create_chat_result(

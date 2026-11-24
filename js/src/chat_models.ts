@@ -5,7 +5,7 @@ import type { ChatModelStreamEvent, FinishReason } from "@langchain/core/languag
 import { AIMessage, AIMessageChunk, type BaseMessage, isAIMessage } from "@langchain/core/messages";
 import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
 import { concat } from "@langchain/core/utils/stream";
-import { ChatOpenAICompletions, type ChatOpenAIFields, normalizeHeaders } from "@langchain/openai";
+import { ChatOpenAICompletions, type ChatOpenAIFields, type HeadersLike, normalizeHeaders } from "@langchain/openai";
 import { INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError } from "interfaze";
 import { SideChannelFilter, stripSideChannels, TAG_RE } from "./side_channels.js";
 import { VERSION } from "./version.js";
@@ -26,6 +26,12 @@ const DEFAULT_TIMEOUT_MS = 900_000;
 const HEADER_SHOW_ADDITIONAL_INFO = "x-show-additional-info";
 const HEADER_BYPASS_MOA = "x-interfaze-bypass-moa";
 const HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache";
+const HEADER_AUTHORIZATION = "authorization";
+
+// Satisfies openai-node, which refuses to build a client without a credential, on a model
+// with no Interfaze key. completionWithRetry removes the Authorization header that
+// openai-node builds from it, so the value never leaves the process.
+const KEYLESS_CREDENTIAL = "interfaze-keyless";
 
 /** How much Interfaze should reason before answering. Widens the parent's
  *  `reasoningEffort` to the full set of levels Interfaze accepts. */
@@ -34,7 +40,9 @@ export type InterfazeReasoningEffort = "minimal" | "low" | "medium" | "high" | "
 /** Constructor options for {@link ChatInterfaze}. Extends the standard
  *  `ChatOpenAIFields` with Interfaze-specific settings. */
 export interface ChatInterfazeFields extends Omit<ChatOpenAIFields, "reasoningEffort"> {
-  /** Interfaze API key. Falls back to the `INTERFAZE_API_KEY` environment variable. */
+  /** Interfaze API key. Falls back to the `INTERFAZE_API_KEY` environment variable. Without
+   *  either, requests carry no `Authorization` header and use Interfaze's keyless access.
+   *  `OPENAI_API_KEY` is never read. */
   apiKey?: string;
   /** How hard the model should reason before answering. */
   reasoningEffort?: InterfazeReasoningEffort;
@@ -240,6 +248,16 @@ function buildHeaders(fields: ChatInterfazeFields): Record<string, string> | und
 }
 
 /**
+ * Clears the Authorization header on one keyless request. A null value is how openai-node
+ * omits a header on purpose, which also passes its credential check. It cannot go on the
+ * client, because @langchain/openai keeps only string values in `defaultHeaders`. A header
+ * the caller passes for this call still wins.
+ */
+function withoutAuthorization(requestOptions: { headers?: HeadersLike } | undefined): Record<string, unknown> {
+  return { ...requestOptions, headers: { [HEADER_AUTHORIZATION]: null, ...normalizeHeaders(requestOptions?.headers) } };
+}
+
+/**
  * LangChain chat model backed by [Interfaze](https://interfaze.ai).
  *
  * Behaves like a standard LangChain chat model — invoke, stream, batch,
@@ -279,16 +297,15 @@ export class ChatInterfaze extends ChatOpenAICompletions {
   // completionWithRetry, so concurrent streams never share a sink.
   readonly #frameSinks = new WeakMap<object, Array<Record<string, unknown>>>();
 
+  readonly #keyless: boolean;
+
   constructor(fields: ChatInterfazeFields = {}) {
     const { apiKey, model, configuration, timeout, showAdditionalInfo, bypassMoA, bypassCache, reasoningEffort, ...rest } = fields;
-    const key = apiKey ?? (typeof process !== "undefined" ? process.env?.INTERFAZE_API_KEY : undefined);
-    if (!key) {
-      throw new InterfazeError("Missing API key. Pass new ChatInterfaze({ apiKey: ... }) or set the INTERFAZE_API_KEY environment variable.");
-    }
+    const key = apiKey || (typeof process !== "undefined" ? process.env?.INTERFAZE_API_KEY : undefined);
     const defaultHeaders = buildHeaders(fields);
     super({
       ...rest,
-      apiKey: key,
+      apiKey: key || KEYLESS_CREDENTIAL,
       model: model ?? INTERFAZE_MODEL,
       timeout: timeout ?? DEFAULT_TIMEOUT_MS,
       configuration: {
@@ -299,6 +316,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
       __includeRawResponse: true,
     });
     this.lc_serializable = false;
+    this.#keyless = !key;
     this.interfazeReasoningEffort = reasoningEffort;
     this._addVersion("@interfaze-ai/langchain", VERSION);
   }
@@ -347,7 +365,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
   // The parent drops choice-less frames, hiding side fields that ride a usage-only frame.
   // Observed rather than reshaped: injecting a choice would duplicate the usage envelope.
   override async completionWithRetry(request: any, requestOptions?: any): Promise<any> {
-    const result = await super.completionWithRetry(request, requestOptions);
+    const result = await super.completionWithRetry(request, this.#keyless ? withoutAuthorization(requestOptions) : requestOptions);
     const sink = requestOptions && this.#frameSinks.get(requestOptions);
     if (!request?.stream || !sink) return result;
     const frames = result as AsyncIterable<Record<string, unknown>>;

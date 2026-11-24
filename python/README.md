@@ -23,6 +23,10 @@ llm = ChatInterfaze(api_key="sk_...")  # or set INTERFAZE_API_KEY and call ChatI
 
 `ChatInterfaze` is a standard LangChain chat model, so the usual keywords (`temperature`, `max_tokens`, `timeout`, `reasoning_effort`, …) are forwarded; `base_url` and `model` default to the Interfaze endpoint and `interfaze-beta`.
 
+You can try Interfaze without an API key. When you pass no `api_key` and `INTERFAZE_API_KEY` is not set, `ChatInterfaze` sends requests without an `Authorization` header. Interfaze then applies its [keyless limits](https://interfaze.ai/docs/limits#keyless-access) to your IP address. `ChatInterfaze` does not read `OPENAI_API_KEY`. Keyless access is intended for agent use, so call it from server-side code: a keyless request from a browser will receive a `403` error. To learn more, read [Try Interfaze without an API key](https://interfaze.ai/docs#try-interfaze-without-an-api-key).
+
+Keyless calls need a release of `interfaze-langchain` later than 1.0.0.
+
 ## Your first request
 
 Extract structured data from an ID. Interfaze runs OCR for you, `with_structured_output` returns your schema, and the raw OCR lands on `response_metadata["precontext"]` — keep both with `include_raw`:
@@ -270,7 +274,7 @@ For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tas
 from interfaze import BadRequestError, InterfazeError, RateLimitError
 ```
 
-`ChatInterfaze` raises `InterfazeError` for client-side problems (a missing API key). Everything else is an `APIError` subclass carrying `status_code` and `code` - `BadRequestError` (400), `AuthenticationError` (401), `RateLimitError` (429), and so on.
+`ChatInterfaze` raises `InterfazeError` for client-side problems, for example a `file_id` content block. Everything else is an `APIError` subclass carrying `status_code` and `code` - `BadRequestError` (400), `AuthenticationError` (401), `RateLimitError` (429), and so on. When the API rejects your key, you get a `401` error, and `ChatInterfaze` does not send the call again without the key. When a keyless call reaches a limit, you get a `429` error with a message that tells you how to get a key.
 
 ## Capabilities
 

@@ -6,6 +6,7 @@ export const VIDEO_URL = "https://download.samplelib.com/mp4/sample-5s.mp4";
 export interface CapturedRequest {
   url: string;
   body: Record<string, unknown> | undefined;
+  headers: Headers;
 }
 
 export function mockChat(
@@ -23,7 +24,7 @@ export function mockChat(
     } catch {
       body = undefined;
     }
-    const req: CapturedRequest = { url, body };
+    const req: CapturedRequest = { url, body, headers: new Headers((init.headers ?? (input as Request).headers) as HeadersInit) };
     calls.push(req);
     return responder(req);
   };

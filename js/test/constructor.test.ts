@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError } from "interfaze";
+import { INTERFAZE_BASE_URL, INTERFAZE_MODEL } from "interfaze";
 import { ChatInterfaze } from "../src/index.js";
 import { completion, jsonResponse, lastBody, mockChat } from "./helpers.js";
 
@@ -19,12 +19,6 @@ describe("ChatInterfaze constructor", () => {
     const model = new ChatInterfaze({ apiKey: "t", model: "other-model", configuration: { baseURL: "https://example.com/v1" } });
     expect(model.model).toBe("other-model");
     expect((model as unknown as { clientConfig: { baseURL?: string } }).clientConfig.baseURL).toBe("https://example.com/v1");
-  });
-
-  it("throws InterfazeError when no api key is present", () => {
-    delete process.env[KEY];
-    expect(() => new ChatInterfaze()).toThrow(InterfazeError);
-    expect(() => new ChatInterfaze()).toThrow(/Missing API key/);
   });
 
   it("reads the api key from INTERFAZE_API_KEY", () => {
@@ -152,12 +146,12 @@ describe("header values", () => {
 });
 
 describe("runtimes without process", () => {
-  it("throws InterfazeError rather than ReferenceError when process is absent", () => {
+  it("builds a keyless model rather than throwing ReferenceError when process is absent", () => {
     const saved = globalThis.process;
     // @ts-expect-error simulating a browser/edge bundle
     delete globalThis.process;
     try {
-      expect(() => new ChatInterfaze()).toThrow(InterfazeError);
+      expect(() => new ChatInterfaze()).not.toThrow();
     } finally {
       globalThis.process = saved;
     }

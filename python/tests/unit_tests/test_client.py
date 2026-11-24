@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 import respx
-from interfaze import INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError
+from interfaze import INTERFAZE_BASE_URL, INTERFAZE_MODEL
 from langchain_core.messages import HumanMessage
 
 from interfaze_langchain import ChatInterfaze
@@ -21,12 +21,6 @@ def test_defaults_overridable() -> None:
     model = ChatInterfaze(api_key="t", base_url="https://example.com/v1", model="other-model")
     assert model.openai_api_base == "https://example.com/v1"
     assert model.model_name == "other-model"
-
-
-def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("INTERFAZE_API_KEY", raising=False)
-    with pytest.raises(InterfazeError, match="Missing API key"):
-        ChatInterfaze()
 
 
 def test_api_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:

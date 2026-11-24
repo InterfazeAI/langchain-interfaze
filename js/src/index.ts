@@ -10,7 +10,7 @@
  * ```ts
  * import { ChatInterfaze } from "@interfaze/langchain";
  *
- * // Reads INTERFAZE_API_KEY from the environment, or pass { apiKey }.
+ * // Reads INTERFAZE_API_KEY from the environment, or pass { apiKey }. With neither, it uses keyless access.
  * const llm = new ChatInterfaze();
  * const res = await llm.invoke("Which US public companies reported earnings today?");
  * console.log(res.content);
