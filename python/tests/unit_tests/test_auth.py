@@ -45,13 +45,13 @@ def _answer(request: httpx.Request) -> httpx.Response:
     return httpx.Response(200, json=body)
 
 
+# Answers every request to the API host, whatever the path.
 def mock_api() -> respx.Route:
-    """Answer every request to the API host, whatever the path."""
     return respx.route(host=API_HOST).mock(side_effect=_answer)
 
 
+# Returns the Authorization values of each request, one list per request.
 def sent_authorization(route: respx.Route) -> list[list[str]]:
-    """The Authorization values of each request, one list per request."""
     return [call.request.headers.get_list("authorization") for call in route.calls]
 
 

@@ -83,12 +83,8 @@ _ResolvedKey = SecretStr | Callable[[], str] | Callable[[], Awaitable[str]]
 _ApiKey = str | _ResolvedKey | None
 
 
+# openai rejects an empty key but sends no Authorization header for a callable returning "".
 def _keyless_api_key() -> str:
-    """Stands in for the key on a model with no Interfaze key.
-
-    The OpenAI SDK rejects an empty string key but accepts a callable, and it builds no
-    Authorization header from the empty string the callable returns.
-    """
     return ""
 
 
@@ -97,14 +93,14 @@ async def _keyless_async_api_key() -> str:
     return ""
 
 
+# Trims a string key, so a blank key becomes "". A callable passes through untouched.
 def _trim_key(key: Any) -> Any:
-    """Trim a string key; a blank key becomes empty. A callable passes through untouched."""
     text = key.get_secret_value() if isinstance(key, SecretStr) else key
     return text.strip() if isinstance(text, str) else text
 
 
+# Returns the first usable key: an explicit one, then INTERFAZE_API_KEY, else None (keyless).
 def _resolve_key(*explicit: _ApiKey) -> _ResolvedKey | None:
-    """The first usable key: an explicit one, then INTERFAZE_API_KEY, else None (keyless)."""
     candidates = (*(_trim_key(key) for key in explicit), _trim_key(os.environ.get(_ENV_API_KEY)))
     key = next((candidate for candidate in candidates if candidate), None)
     return SecretStr(key) if isinstance(key, str) else key

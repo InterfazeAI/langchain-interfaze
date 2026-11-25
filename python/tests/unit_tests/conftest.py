@@ -14,18 +14,17 @@ CHAT_URL = "https://api.interfaze.ai/v1/chat/completions"
 VIDEO_URL = "https://download.samplelib.com/mp4/sample-5s.mp4"
 
 
+# No test reads a key from the machine it runs on.
 @pytest.fixture(autouse=True)
 def _no_env_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No test reads a key from the machine it runs on."""
     monkeypatch.delenv("INTERFAZE_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
 
 
+# Skips the wait between retries, so a retry count costs no time.
 @pytest.fixture
 def no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Skip the wait between retries so a retry count costs no time."""
-
     def sync_sleep(self: Any, **kwargs: Any) -> None:
         return None
 
