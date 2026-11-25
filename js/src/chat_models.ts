@@ -345,6 +345,9 @@ export class ChatInterfaze extends ChatOpenAICompletions {
   /** Kept off the parent, whose `reasoningEffort` type is narrower than Interfaze accepts. */
   readonly interfazeReasoningEffort?: InterfazeReasoningEffort;
 
+  /** `true` when the model sends no `Authorization` header. */
+  readonly isKeyless: boolean;
+
   // Keyed on the call options, the one object the parent hands back to
   // completionWithRetry, so concurrent streams never share a sink.
   readonly #frameSinks = new WeakMap<object, Array<Record<string, unknown>>>();
@@ -385,6 +388,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     });
     this.lc_serializable = false;
     this.interfazeReasoningEffort = reasoningEffort;
+    this.isKeyless = keyless;
     this._addVersion("@interfaze-ai/langchain", VERSION);
   }
 

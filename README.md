@@ -58,6 +58,8 @@ TypeScript:
 const model = new ChatInterfaze();
 ```
 
+In TypeScript, `model.isKeyless` is `true` when the model has no API key.
+
 See [Try Interfaze without an API key](https://interfaze.ai/docs#try-interfaze-without-an-api-key) for the limits and rules.
 
 Keyless access needs a release of `interfaze-langchain` later than 1.0.0 or of `@interfaze-ai/langchain` later than 1.0.0.

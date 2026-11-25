@@ -317,3 +317,22 @@ describe("a browser worker", () => {
     expect(authorizations(calls)).toEqual([null]);
   });
 });
+
+describe("isKeyless", () => {
+  it("is true with no key", () => {
+    expect(new ChatInterfaze().isKeyless).toBe(true);
+  });
+
+  it("is true for a blank key and a blank caller Authorization header", () => {
+    expect(new ChatInterfaze({ apiKey: " \n", configuration: { defaultHeaders: { Authorization: "" } } }).isKeyless).toBe(true);
+  });
+
+  it.each<[string, Record<string, string>, Fields]>([
+    ["an explicit key", {}, { apiKey: EXPLICIT_KEY }],
+    ["an env key", { INTERFAZE_API_KEY: ENV_KEY }, {}],
+    ["a caller Authorization header", {}, { configuration: { defaultHeaders: { authorization: bearer(HEADER_KEY) } } }],
+  ])("is false with %s", (_label, env, fields) => {
+    Object.entries(env).forEach(([name, value]) => vi.stubEnv(name, value));
+    expect(new ChatInterfaze(fields).isKeyless).toBe(false);
+  });
+});
