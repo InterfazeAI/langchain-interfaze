@@ -18,6 +18,7 @@ def _no_env_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test reads a key from the machine it runs on."""
     monkeypatch.delenv("INTERFAZE_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
 
 
 _USAGE = {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}

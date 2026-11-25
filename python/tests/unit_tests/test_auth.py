@@ -21,6 +21,7 @@ ENV_KEY = "env-key-1"
 EXPLICIT_KEY = "explicit-key-2"
 FIELD_KEY = "field-key-3"
 OPENAI_KEY = "openai-key-4"
+OPENAI_ADMIN_KEY = "openai-admin-key-7"
 NEW_KEY = "new-key-5"
 CALLER_TOKEN = "caller-token-6"
 CALLER_AUTH = bearer(CALLER_TOKEN)
@@ -218,3 +219,23 @@ async def test_keyless_model_serializes_and_still_sends_no_key(monkeypatch: pyte
     model.root_client.with_options(timeout=5).models.list()
     assert sent_authorization(route) == [[], []]
     assert not _leaks_openai_key(route)
+
+
+@respx.mock
+@pytest.mark.skipif(not hasattr(OpenAI, "admin"), reason="This openai has no admin resource.")
+@pytest.mark.parametrize("kwargs", [{}, {"api_key": EXPLICIT_KEY}], ids=["no key", "api_key"])
+async def test_openai_admin_key_is_never_sent(
+    monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, Any]
+) -> None:
+    route = mock_api()
+    monkeypatch.setenv("OPENAI_ADMIN_KEY", OPENAI_ADMIN_KEY)
+    model = ChatInterfaze(**kwargs)
+    model.root_client.admin.organization.admin_api_keys.list()
+    model.root_client.with_options(timeout=5).admin.organization.admin_api_keys.list()
+    await model.root_async_client.admin.organization.admin_api_keys.list()
+    await model.root_async_client.copy(timeout=5).admin.organization.admin_api_keys.list()
+    assert route.call_count == 4
+    assert sent_authorization(route) == [[]] * 4
+    assert not any(
+        OPENAI_ADMIN_KEY in value for call in route.calls for value in call.request.headers.values()
+    )

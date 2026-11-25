@@ -156,6 +156,11 @@ def _single_authorization(headers: httpx.Headers, caller: Mapping[str, Any]) -> 
 # The two clients below replace the plain OpenAI clients that ChatOpenAI builds, so every
 # path through `root_client`, `client`, `async_client`, `with_options` and `copy` shares them.
 class _InterfazeOpenAI(OpenAI):
+    # openai reads OPENAI_ADMIN_KEY for its admin resources. No admin key may reach Interfaze.
+    @property
+    def _admin_api_key_auth(self) -> dict[str, str]:
+        return {}
+
     # openai-python refuses a request with no Authorization header. Interfaze accepts it.
     def _validate_headers(self, *args: Any, **kwargs: Any) -> None:
         return None
@@ -169,6 +174,10 @@ class _InterfazeOpenAI(OpenAI):
 
 
 class _InterfazeAsyncOpenAI(AsyncOpenAI):
+    @property
+    def _admin_api_key_auth(self) -> dict[str, str]:
+        return {}
+
     def _validate_headers(self, *args: Any, **kwargs: Any) -> None:
         return None
 
