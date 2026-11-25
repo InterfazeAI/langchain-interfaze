@@ -398,6 +398,8 @@ class ChatInterfaze(ChatOpenAI):
         """
         key = _resolve_key(api_key, kwargs.pop("openai_api_key", None))
         headers = {k.lower(): str(v) for k, v in (default_headers or {}).items()}
+        if not headers.get("authorization", "").strip():
+            headers.pop("authorization", None)
         if show_additional_info:
             headers[_HEADER_SHOW_ADDITIONAL_INFO] = "true"
         if bypass_moa:

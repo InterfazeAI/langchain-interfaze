@@ -239,3 +239,13 @@ async def test_key_function_returning_blank_raises_before_any_request(call: Call
     with pytest.raises(TypeError, match="Could not resolve authentication method"):
         await call(ChatInterfaze(api_key=lambda: ""))
     assert not route.called
+
+
+@respx.mock
+@pytest.mark.parametrize("blank", ["", " \n"], ids=["empty", "whitespace"])
+@pytest.mark.parametrize("name", ["Authorization", "authorization"])
+async def test_blank_authorization_default_header_counts_as_unset(blank: str, name: str) -> None:
+    route = mock_api()
+    ChatInterfaze(default_headers={name: blank}).invoke(MESSAGES)
+    ChatInterfaze(api_key=EXPLICIT_KEY, default_headers={name: blank}).invoke(MESSAGES)
+    assert sent_authorization(route) == [[], [bearer(EXPLICIT_KEY)]]
