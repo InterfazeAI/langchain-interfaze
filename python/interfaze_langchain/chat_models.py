@@ -5,6 +5,7 @@ import itertools
 import json
 import os
 import re
+import warnings
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from typing import Any, NamedTuple
@@ -39,6 +40,13 @@ _HEADER_BYPASS_MOA = "x-interfaze-bypass-moa"
 _HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache"
 
 _ENV_API_KEY = "INTERFAZE_API_KEY"
+
+_KEYLESS_WARNING = (
+    "Interfaze SDK is running in keyless mode. For higher rate limits, get an API key at "
+    "https://interfaze.ai/dashboard."
+)
+
+_keyless_warned = False
 
 _SIDE_FIELDS = ("precontext", "reasoning", "vcache")
 
@@ -423,6 +431,10 @@ class ChatInterfaze(ChatOpenAI):
         # The stand-in key function stays in the built clients; the field holds a plain blank key.
         if key is None:
             self.openai_api_key = SecretStr("")
+            global _keyless_warned
+            if not _keyless_warned and "authorization" not in headers:
+                _keyless_warned = True
+                warnings.warn(_KEYLESS_WARNING, UserWarning, stacklevel=2)
 
     # Must be uniquely named: pydantic replaces same-named validators rather than chaining
     # them, so reusing the parent's name would drop its version entry.
