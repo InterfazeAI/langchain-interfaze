@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import re
+import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from typing import Any, NamedTuple
 
@@ -128,6 +130,15 @@ class AsyncInterfazeOpenAI(AsyncOpenAI):
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:12]
+
+
+# One id for each key function, so the cache key tells two functions apart without exposing either.
+_KEY_FUNCTION_IDS: weakref.WeakKeyDictionary[Callable[..., Any], int] = weakref.WeakKeyDictionary()
+_KEY_FUNCTION_COUNTER = itertools.count(1)
+
+
+def _key_function_id(function: Callable[..., Any]) -> int:
+    return _KEY_FUNCTION_IDS.setdefault(function, next(_KEY_FUNCTION_COUNTER))
 
 
 def _redact_headers(headers: Mapping[str, str]) -> list[str]:
@@ -417,9 +428,11 @@ class ChatInterfaze(ChatOpenAI):
         # Without these, set_llm_cache serves a bypass_cache model the plain model's answer,
         # and one tenant's key the answer cached under another's.
         params = {**super()._identifying_params, "_type": self._llm_type}
-        # A callable key resolves per request, so there is no stable value to key on.
+        # A key function resolves per request, so its id stands for it.
         if isinstance(self.openai_api_key, SecretStr):
             params["interfaze_key"] = _digest(self.openai_api_key.get_secret_value())
+        elif callable(self.openai_api_key):
+            params["interfaze_key"] = f"function-{_key_function_id(self.openai_api_key)}"
         if self.default_headers:
             params["interfaze_headers"] = _redact_headers(self.default_headers)
         return params

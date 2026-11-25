@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
 import respx
 from interfaze import INTERFAZE_BASE_URL, INTERFAZE_MODEL
+from langchain_core.caches import InMemoryCache
+from langchain_core.globals import set_llm_cache
 from langchain_core.messages import HumanMessage
 
 from interfaze_langchain import ChatInterfaze
@@ -132,3 +135,32 @@ def test_cache_key_separates_two_api_keys() -> None:
     b = ChatInterfaze(api_key="sk_tenant_b")
     assert a._get_llm_string() != b._get_llm_string()
     assert "sk_tenant_a" not in a._get_llm_string()
+
+
+def test_cache_key_separates_two_key_functions() -> None:
+    a = ChatInterfaze(api_key=lambda: "sk_tenant_a")
+    b = ChatInterfaze(api_key=lambda: "sk_tenant_b")
+    assert a._get_llm_string() != b._get_llm_string()
+
+
+def test_cache_key_is_the_same_for_one_key_function() -> None:
+    def key() -> str:
+        return "sk_tenant_a"
+
+    assert ChatInterfaze(api_key=key)._get_llm_string() == ChatInterfaze(api_key=key)._get_llm_string()
+
+
+@pytest.fixture
+def llm_cache() -> Iterator[None]:
+    set_llm_cache(InMemoryCache())
+    yield
+    set_llm_cache(None)
+
+
+@respx.mock
+@pytest.mark.usefixtures("llm_cache")
+def test_two_key_functions_send_two_requests() -> None:
+    route = mock_json(BASIC)
+    ChatInterfaze(api_key=lambda: "sk_tenant_a").invoke("q")
+    ChatInterfaze(api_key=lambda: "sk_tenant_b").invoke("q")
+    assert route.call_count == 2
