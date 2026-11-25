@@ -83,6 +83,15 @@ describe("identifying params", () => {
     expect(JSON.stringify(a._identifyingParams())).not.toEqual(JSON.stringify(b._identifyingParams()));
   });
 
+  it("keeps two function keys in separate cache entries", () => {
+    const fingerprint = (apiKey: () => Promise<string>): string =>
+      JSON.stringify(new ChatInterfaze({ configuration: { apiKey } })._identifyingParams());
+    const first = async (): Promise<string> => "first";
+    const second = async (): Promise<string> => "second";
+    expect(fingerprint(first)).not.toEqual(fingerprint(second));
+    expect(fingerprint(first)).toEqual(fingerprint(first));
+  });
+
   it("shows the flags it owns in the clear", () => {
     const model = new ChatInterfaze({ apiKey: "k", bypassCache: true });
     expect((model._identifyingParams() as unknown as Record<string, unknown>).interfazeHeaders).toEqual(["x-interfaze-bypass-cache=true"]);

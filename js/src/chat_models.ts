@@ -232,6 +232,18 @@ const digest = (value: string): string => {
   return (hash >>> 0).toString(16);
 };
 
+const keySetterIds = new WeakMap<ApiKeySetter, number>();
+const keySetterCount = { value: 0 };
+
+/** A function key has no value to hash, so each function gets a stable id for the cache key. */
+const keySetterId = (setter: ApiKeySetter): number => {
+  const known = keySetterIds.get(setter);
+  if (known !== undefined) return known;
+  keySetterCount.value += 1;
+  keySetterIds.set(setter, keySetterCount.value);
+  return keySetterCount.value;
+};
+
 const redactHeaders = (headers: Record<string, string>): string[] =>
   Object.keys(headers)
     .sort()
@@ -368,6 +380,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     return {
       ...rest,
       ...(typeof apiKey === "string" ? { interfazeKey: digest(apiKey) } : {}),
+      ...(isKeySetter(apiKey) ? { interfazeKey: `function-${keySetterId(apiKey)}` } : {}),
       ...(defaultHeaders ? { interfazeHeaders: redactHeaders(defaultHeaders as Record<string, string>) } : {}),
     } as ReturnType<ChatOpenAICompletions["_identifyingParams"]>;
   }
