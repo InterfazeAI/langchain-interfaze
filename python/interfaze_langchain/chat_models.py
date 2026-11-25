@@ -7,7 +7,6 @@ import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from typing import Any, NamedTuple
 
-import httpx
 from interfaze import (
     INTERFAZE_BASE_URL,
     INTERFAZE_MODEL,
@@ -36,14 +35,8 @@ _DEFAULT_TIMEOUT = 900.0
 _HEADER_SHOW_ADDITIONAL_INFO = "x-show-additional-info"
 _HEADER_BYPASS_MOA = "x-interfaze-bypass-moa"
 _HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache"
-_HEADER_AUTHORIZATION = "authorization"
-_HEADER_RETRY_AFTER = "retry-after"
 
 _ENV_API_KEY = "INTERFAZE_API_KEY"
-_DAILY_LIMIT_CODE = "keyless_daily_limit_exceeded"
-# A keyless 429 that asks for a longer wait than this is the daily limit.
-_DAILY_LIMIT_MIN_RETRY_AFTER = 60
-_HTTP_TOO_MANY_REQUESTS = 429
 
 _SIDE_FIELDS = ("precontext", "reasoning", "vcache")
 
@@ -110,49 +103,6 @@ def _resolve_key(*explicit: _ApiKey) -> _ResolvedKey | None:
     return SecretStr(key) if isinstance(key, str) else key
 
 
-def _retry_after_seconds(response: httpx.Response) -> float:
-    try:
-        return float(response.headers.get(_HEADER_RETRY_AFTER, ""))
-    except ValueError:
-        return 0.0
-
-
-def _is_keyless_daily_limit(response: httpx.Response) -> bool:
-    """Whether a keyless request got the daily-limit 429, which no retry can fix.
-
-    The body code decides. A streamed async response has no readable body before the retry
-    decision, so a long `Retry-After` stands in for the code there.
-    """
-    if response.status_code != _HTTP_TOO_MANY_REQUESTS or _HEADER_AUTHORIZATION in response.request.headers:
-        return False
-    try:
-        response.read()
-        body = response.json()
-    except RuntimeError:
-        return _retry_after_seconds(response) > _DAILY_LIMIT_MIN_RETRY_AFTER
-    except ValueError:
-        return False
-    error = body.get("error") if isinstance(body, dict) else None
-    return isinstance(error, dict) and error.get("code") == _DAILY_LIMIT_CODE
-
-
-def _single_authorization(headers: httpx.Headers, caller: Mapping[str, Any]) -> httpx.Headers:
-    """Keep only the caller's Authorization header when the key adds a second one.
-
-    The SDK merges headers by exact name, so `authorization` from the caller and
-    `Authorization` from the key both reach the wire. The last caller header wins.
-    """
-    values = [
-        value
-        for name, value in caller.items()
-        if name.lower() == _HEADER_AUTHORIZATION and isinstance(value, str)
-    ]
-    if len(headers.get_list(_HEADER_AUTHORIZATION)) < 2:
-        return headers
-    others = [(name, value) for name, value in headers.multi_items() if name.lower() != _HEADER_AUTHORIZATION]
-    return httpx.Headers([*others, (_HEADER_AUTHORIZATION, values[-1])])
-
-
 # openai builds the User-Agent header from the class name, so the names omit the underscore.
 # The two clients below replace the plain OpenAI clients that ChatOpenAI builds, so every
 # path through `root_client`, `client`, `async_client`, `with_options` and `copy` shares them.
@@ -166,13 +116,6 @@ class InterfazeOpenAI(OpenAI):
     def _validate_headers(self, *args: Any, **kwargs: Any) -> None:
         return None
 
-    def _should_retry(self, response: httpx.Response) -> bool:
-        return not _is_keyless_daily_limit(response) and super()._should_retry(response)
-
-    def _build_headers(self, options: Any, *, retries_taken: int = 0) -> httpx.Headers:
-        headers = super()._build_headers(options, retries_taken=retries_taken)
-        return _single_authorization(headers, {**self._custom_headers, **(options.headers or {})})
-
 
 class AsyncInterfazeOpenAI(AsyncOpenAI):
     @property
@@ -181,13 +124,6 @@ class AsyncInterfazeOpenAI(AsyncOpenAI):
 
     def _validate_headers(self, *args: Any, **kwargs: Any) -> None:
         return None
-
-    def _should_retry(self, response: httpx.Response) -> bool:
-        return not _is_keyless_daily_limit(response) and super()._should_retry(response)
-
-    def _build_headers(self, options: Any, *, retries_taken: int = 0) -> httpx.Headers:
-        headers = super()._build_headers(options, retries_taken=retries_taken)
-        return _single_authorization(headers, {**self._custom_headers, **(options.headers or {})})
 
 
 def _digest(value: str) -> str:

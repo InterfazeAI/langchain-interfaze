@@ -48,7 +48,7 @@ Without an API key, `ChatInterfaze` sends requests with no `Authorization` heade
 
 Keyless access needs a release of `interfaze-langchain` later than 1.0.0 or of `@interfaze-ai/langchain` later than 1.0.0.
 
-When the keyless daily limit is reached, the client throws the `429` and does not retry it while the reset is more than a minute away. In TypeScript, LangChain's caller retries a keyless in-flight `429` (code `keyless_inflight_limit_exceeded`), and `maxRetries` controls how many times.
+When the keyless daily limit is reached, the client throws the `429`. Python does not retry it, and TypeScript does not retry it while the reset is more than a minute away. In TypeScript, LangChain's caller retries a keyless in-flight `429` (code `keyless_inflight_limit_exceeded`), and `maxRetries` controls how many times.
 
 ## Your first request
 
