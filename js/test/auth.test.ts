@@ -15,6 +15,7 @@ const FUNCTION_KEY = "sk-test-function";
 const HEADER_KEY = "sk-test-header";
 const REQUEST_KEY = "sk-test-request";
 const NEW_KEY = "sk-test-new";
+const ADMIN_KEY = "sk-test-admin";
 const bearer = (key: string): string => `Bearer ${key}`;
 
 const BLANK_KEYS = ["", " ", " \n"];
@@ -283,6 +284,13 @@ describe("a raw client", () => {
     const request = new Request("https://api.interfaze.ai/v1/models", { headers: { Authorization: bearer(REQUEST_KEY) } });
     await model.clientConfig.fetch?.(request);
     expect(authorizations(calls)).toEqual([bearer(REQUEST_KEY)]);
+  });
+
+  it("sends no OPENAI_ADMIN_KEY from the environment on an admin endpoint", async () => {
+    vi.stubEnv("OPENAI_ADMIN_KEY", ADMIN_KEY);
+    const { model, calls } = build(respond);
+    await expect(rawClient(model).admin.organization.usage.completions({ start_time: 1 })).rejects.toThrow();
+    expect(calls).toEqual([]);
   });
 
   it("uses the global fetch when the caller passes none", async () => {

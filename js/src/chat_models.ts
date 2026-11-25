@@ -363,6 +363,8 @@ export class ChatInterfaze extends ChatOpenAICompletions {
       timeout: timeout ?? DEFAULT_TIMEOUT_MS,
       configuration: {
         baseURL: INTERFAZE_BASE_URL,
+        // null stops openai-node from reading OPENAI_ADMIN_KEY into the Authorization header.
+        adminAPIKey: null,
         ...configuration,
         apiKey: key ?? KEYLESS_CREDENTIAL,
         ...(key === undefined ? { fetch: withoutStandInKey(configuration?.fetch) } : {}),
