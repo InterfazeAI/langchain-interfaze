@@ -23,11 +23,16 @@ llm = ChatInterfaze(api_key="sk_...")  # or set INTERFAZE_API_KEY and call ChatI
 
 `ChatInterfaze` is a standard LangChain chat model, so the usual keywords (`temperature`, `max_tokens`, `timeout`, `reasoning_effort`, …) are forwarded; `base_url` and `model` default to the Interfaze endpoint and `interfaze-beta`.
 
-Without an API key, `ChatInterfaze` sends requests with no `Authorization` header. This works only from server-side code. Interfaze limits keyless requests from each IP address and does not accept them from a browser. A blank key counts as no key. See [Try Interfaze without an API key](https://interfaze.ai/docs#try-interfaze-without-an-api-key) and the [keyless limits](https://interfaze.ai/docs/limits#keyless-access).
+### Keyless access
 
-Keyless access needs a release of `interfaze-langchain` later than 1.0.0. `ChatInterfaze` does not read `OPENAI_API_KEY`.
+```python
+# No API key: Interfaze applies per-IP keyless limits. Server-side code only.
+model = ChatInterfaze()
+```
 
-When the keyless daily limit is reached, the client throws the `429` and does not retry it.
+See [Try Interfaze without an API key](https://interfaze.ai/docs#try-interfaze-without-an-api-key) for the limits and rules.
+
+Keyless access needs a release of `interfaze-langchain` later than 1.0.0.
 
 ## Your first request
 
