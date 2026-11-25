@@ -23,13 +23,16 @@ const llm = new ChatInterfaze({ apiKey: "sk_..." }); // or set INTERFAZE_API_KEY
 
 `ChatInterfaze` is a standard LangChain chat model, so the usual options (`temperature`, `maxTokens`, `timeout`, `reasoningEffort`, …) are forwarded; `configuration.baseURL` and `model` default to the Interfaze endpoint and `interfaze-beta`.
 
-Without an API key, `ChatInterfaze` sends requests with no `Authorization` header. This works only from server-side code. Interfaze limits keyless requests from each IP address and does not accept them from a browser. A blank key counts as no key. See [Try Interfaze without an API key](https://interfaze.ai/docs#try-interfaze-without-an-api-key) and the [keyless limits](https://interfaze.ai/docs/limits#keyless-access).
+### Keyless access
 
-`ChatInterfaze` does not read `OPENAI_API_KEY`. `apiKey`, `openAIApiKey` and `configuration.apiKey` all count as a key, and a function in `configuration.apiKey` passes through as it is. An `Authorization` header in `configuration.defaultHeaders` is sent as it is.
+```ts
+// No API key: Interfaze applies per-IP keyless limits. Server-side code only.
+const model = new ChatInterfaze();
+```
+
+See [Try Interfaze without an API key](https://interfaze.ai/docs#try-interfaze-without-an-api-key) for the limits and rules.
 
 Keyless access needs a release of `@interfaze-ai/langchain` later than 1.0.0.
-
-When the keyless daily limit is reached, the client throws the `429` and does not retry it while the reset is more than a minute away. LangChain's caller retries a keyless in-flight `429` (code `keyless_inflight_limit_exceeded`), and `maxRetries` controls how many times.
 
 ## Your first request
 
