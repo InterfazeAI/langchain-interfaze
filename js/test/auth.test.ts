@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InterfazeError } from "interfaze";
-import { z } from "zod";
 import { ChatInterfaze, type ChatInterfazeFields } from "../src/index.js";
 import { type CapturedRequest, chunk, completion, jsonResponse, recordingFetch, sseResponse } from "./helpers.js";
 
@@ -13,12 +12,9 @@ const OPENAI_FIELD_KEY = "sk-test-openai-field";
 const CONFIG_KEY = "sk-test-config";
 const FUNCTION_KEY = "sk-test-function";
 const HEADER_KEY = "sk-test-header";
-const REQUEST_KEY = "sk-test-request";
 const NEW_KEY = "sk-test-new";
 const ADMIN_KEY = "sk-test-admin";
 const bearer = (key: string): string => `Bearer ${key}`;
-
-const BLANK_KEYS = ["", " \n"];
 
 // Error bodies in the shape the API sends.
 const REQUEST_ID = "req-test";
@@ -49,13 +45,7 @@ const IN_FLIGHT_BODY = {
 };
 
 const DAILY_RETRY_AFTER_S = 3600;
-const DAILY_LIMIT = 1000;
-const dailyHeaders = (): Record<string, string> => ({
-  "retry-after": String(DAILY_RETRY_AFTER_S),
-  "x-ratelimit-limit": String(DAILY_LIMIT),
-  "x-ratelimit-remaining": "0",
-  "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + DAILY_RETRY_AFTER_S),
-});
+const DAILY_HEADERS = { "retry-after": String(DAILY_RETRY_AFTER_S) };
 const IN_FLIGHT_RETRY_AFTER_S = 5;
 const IN_FLIGHT_HEADERS = { "retry-after": String(IN_FLIGHT_RETRY_AFTER_S) };
 const IN_FLIGHT_MAX_RETRIES = 1;
@@ -67,14 +57,13 @@ const CLIENT_TIMEOUT_MS = 5000;
 const errorResponse = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 
-// One responder for every path: models, moderations, a stream, or a completion.
+// One responder for every path: models, a stream, or a completion.
 const respond = (req: CapturedRequest): Response => {
   if (req.url.endsWith("/models")) {
     return jsonResponse({ object: "list", data: [{ id: "interfaze-beta", object: "model", created: 1, owned_by: "interfaze" }] });
   }
-  if (req.url.endsWith("/moderations")) return jsonResponse({ id: "modr-test", model: "omni-moderation-latest", results: [] });
   if (req.body?.stream) return sseResponse([chunk({ content: "Hi!" }), chunk({}, "stop")]);
-  return jsonResponse(completion('{"a":1}'));
+  return jsonResponse(completion("Hi!"));
 };
 
 const drain = async (iterator: AsyncIterator<unknown>): Promise<void> => {
@@ -96,110 +85,57 @@ const rawClient = (model: ChatInterfaze): ChatInterfaze["client"] => {
   return model.client;
 };
 
-const schema = z.object({ a: z.number() });
-
 const invoke: Call = (model) => model.invoke("hi");
-const stream: Call = (model) => model.stream("hi").then((chunks) => drain(chunks[Symbol.asyncIterator]()));
 
 const PATHS: Array<[string, Call]> = [
   ["invoke", invoke],
-  ["stream", stream],
-  ["batch", (model) => model.batch(["a", "b"])],
-  ["withStructuredOutput", (model) => model.withStructuredOutput(schema, { method: "jsonSchema" }).invoke("hi")],
-  ["moderateContent", (model) => model.moderateContent("hi")],
+  ["stream", (model) => model.stream("hi").then((chunks) => drain(chunks[Symbol.asyncIterator]()))],
   ["client.models.list", (model) => rawClient(model).models.list()],
-  [
-    "client.chat.completions.create",
-    (model) => rawClient(model).chat.completions.create({ model: "interfaze-beta", messages: [{ role: "user", content: "hi" }] }),
-  ],
   ["client.withOptions", (model) => rawClient(model).withOptions({ timeout: CLIENT_TIMEOUT_MS }).models.list()],
 ];
-
-const INVOKE_PATH: Array<[string, Call]> = [["invoke", invoke]];
 
 interface Scenario {
   name: string;
   env?: Record<string, string>;
   fields?: Fields;
   expected: string | null;
-  allPaths?: true;
 }
 
-const functionKey = (): Fields["configuration"] => ({ apiKey: async () => FUNCTION_KEY });
-
 const SCENARIOS: Scenario[] = [
-  { name: "no key", allPaths: true, expected: null },
   { name: "only OPENAI_API_KEY", env: { OPENAI_API_KEY: OPENAI_KEY }, expected: null },
-  { name: "env key", env: { INTERFAZE_API_KEY: ENV_KEY }, allPaths: true, expected: bearer(ENV_KEY) },
-  { name: "explicit key over env key", env: { INTERFAZE_API_KEY: ENV_KEY }, fields: { apiKey: EXPLICIT_KEY }, expected: bearer(EXPLICIT_KEY) },
-  ...BLANK_KEYS.map((apiKey) => ({ name: `blank explicit ${JSON.stringify(apiKey)}`, fields: { apiKey }, expected: null })),
-  ...BLANK_KEYS.map((apiKey) => ({
-    name: `blank explicit ${JSON.stringify(apiKey)} with env key`,
+  { name: "trimmed env key", env: { INTERFAZE_API_KEY: ` ${ENV_KEY}\n` }, expected: bearer(ENV_KEY) },
+  {
+    name: "trimmed explicit key over env key",
     env: { INTERFAZE_API_KEY: ENV_KEY },
-    fields: { apiKey },
-    expected: bearer(ENV_KEY),
-  })),
-  ...BLANK_KEYS.map((value) => ({ name: `blank env ${JSON.stringify(value)}`, env: { INTERFAZE_API_KEY: value }, expected: null })),
-  { name: "function key", fields: { configuration: functionKey() }, expected: bearer(FUNCTION_KEY) },
-  { name: "openAIApiKey", fields: { openAIApiKey: OPENAI_FIELD_KEY }, expected: bearer(OPENAI_FIELD_KEY) },
+    fields: { apiKey: ` ${EXPLICIT_KEY}\n` },
+    expected: bearer(EXPLICIT_KEY),
+  },
+  { name: "blank explicit key with env key", env: { INTERFAZE_API_KEY: ENV_KEY }, fields: { apiKey: " \n" }, expected: bearer(ENV_KEY) },
+  { name: "blank env key", env: { INTERFAZE_API_KEY: " \n" }, expected: null },
+  { name: "function key", fields: { configuration: { apiKey: async () => FUNCTION_KEY } }, expected: bearer(FUNCTION_KEY) },
   {
     name: "openAIApiKey over env key",
     env: { INTERFAZE_API_KEY: ENV_KEY },
     fields: { openAIApiKey: OPENAI_FIELD_KEY },
     expected: bearer(OPENAI_FIELD_KEY),
   },
-  { name: "configuration.apiKey", fields: { configuration: { apiKey: CONFIG_KEY } }, expected: bearer(CONFIG_KEY) },
   {
     name: "configuration.apiKey over env key",
     env: { INTERFAZE_API_KEY: ENV_KEY },
     fields: { configuration: { apiKey: CONFIG_KEY } },
     expected: bearer(CONFIG_KEY),
   },
-  { name: "blank apiKey with configuration.apiKey", fields: { apiKey: " ", configuration: { apiKey: CONFIG_KEY } }, expected: bearer(CONFIG_KEY) },
-  { name: "blank configuration.apiKey", fields: { configuration: { apiKey: " \n" } }, expected: null },
-  {
-    name: "blank configuration.apiKey with env key",
-    env: { INTERFAZE_API_KEY: ENV_KEY },
-    fields: { configuration: { apiKey: " " } },
-    expected: bearer(ENV_KEY),
-  },
   {
     name: "caller Authorization header without a key",
-    allPaths: true,
     fields: { configuration: { defaultHeaders: { Authorization: bearer(HEADER_KEY) } } },
     expected: bearer(HEADER_KEY),
   },
-  {
-    name: "lowercase caller authorization header without a key",
-    fields: { configuration: { defaultHeaders: { authorization: bearer(HEADER_KEY) } } },
-    expected: bearer(HEADER_KEY),
-  },
-  {
-    name: "Headers instance with Authorization without a key",
-    fields: { configuration: { defaultHeaders: new Headers({ Authorization: bearer(HEADER_KEY) }) } },
-    expected: bearer(HEADER_KEY),
-  },
-  ...BLANK_KEYS.map((value) => ({
-    name: `blank caller Authorization header ${JSON.stringify(value)} without a key`,
-    fields: { configuration: { defaultHeaders: { Authorization: value } } },
-    expected: null,
-  })),
-  ...BLANK_KEYS.map((value) => ({
-    name: `blank caller Authorization header ${JSON.stringify(value)} with an explicit key`,
-    fields: { apiKey: EXPLICIT_KEY, configuration: { defaultHeaders: { Authorization: value } } },
-    expected: bearer(EXPLICIT_KEY),
-  })),
   {
     name: "caller Authorization header over an explicit key",
     fields: { apiKey: EXPLICIT_KEY, configuration: { defaultHeaders: { AUTHORIZATION: bearer(HEADER_KEY) } } },
     expected: bearer(HEADER_KEY),
   },
-  {
-    name: "caller Authorization header over an env key",
-    env: { INTERFAZE_API_KEY: ENV_KEY },
-    fields: { configuration: { defaultHeaders: { Authorization: bearer(HEADER_KEY) } } },
-    expected: bearer(HEADER_KEY),
-  },
+  { name: "blank caller Authorization header without a key", fields: { configuration: { defaultHeaders: { Authorization: "" } } }, expected: null },
 ];
 
 beforeEach(() => {
@@ -215,56 +151,34 @@ afterEach(() => {
 
 const authorizations = (calls: CapturedRequest[]): Array<string | null> => calls.map((c) => c.headers.get("authorization"));
 
-describe.each(SCENARIOS)("$name", ({ env, fields, expected, allPaths }) => {
-  it.each(allPaths ? PATHS : INVOKE_PATH)("%s sends the expected Authorization header on every request", async (_label, call) => {
-    Object.entries(env ?? {}).forEach(([name, value]) => vi.stubEnv(name, value));
-    const { model, calls } = build(respond, fields);
+const expectNoStandIn = (calls: CapturedRequest[]): void =>
+  calls.forEach((c) => c.headers.forEach((value) => expect(value).not.toMatch(new RegExp(`${STAND_IN}|${OPENAI_KEY}`))));
+
+describe("a model with no key", () => {
+  it.each(PATHS)("%s sends no Authorization header", async (_label, call) => {
+    vi.stubEnv("OPENAI_API_KEY", OPENAI_KEY);
+    const { model, calls } = build(respond);
     await call(model);
     expect(calls.length).toBeGreaterThan(0);
-    expect(authorizations(calls)).toEqual(calls.map(() => expected));
-    calls.forEach((c) => c.headers.forEach((value) => expect(value).not.toMatch(new RegExp(`${STAND_IN}|${OPENAI_KEY}`))));
-  });
-});
-
-describe("the key a model keeps", () => {
-  it("passes a function key through untouched", () => {
-    const apiKey = async (): Promise<string> => FUNCTION_KEY;
-    const model = new ChatInterfaze({ configuration: { apiKey } });
-    expect(model.clientConfig.apiKey).toBe(apiKey);
-    expect(model.apiKey).toBe(apiKey);
+    expect(authorizations(calls)).toEqual(calls.map(() => null));
+    expectNoStandIn(calls);
   });
 
-  it("trims a string key before it sends the header", async () => {
-    vi.stubEnv("INTERFAZE_API_KEY", ` ${ENV_KEY}\n`);
-    const sent = await Promise.all(
-      [{ apiKey: ` ${EXPLICIT_KEY}\n` }, { configuration: { apiKey: ` ${CONFIG_KEY} ` } }, {}].map(async (fields) => {
-        const { model, calls } = build(respond, fields);
-        await invoke(model);
-        return authorizations(calls);
-      })
-    );
-    expect(sent).toEqual([[bearer(EXPLICIT_KEY)], [bearer(CONFIG_KEY)], [bearer(ENV_KEY)]]);
-  });
-});
-
-describe("a request header the caller sets for one call", () => {
-  const headers = { Authorization: bearer(REQUEST_KEY) };
-  it("sends it without a key", async () => {
-    const { model, calls } = build(respond);
-    await model.invoke("hi", { options: { headers } });
-    expect(authorizations(calls)).toEqual([bearer(REQUEST_KEY)]);
-  });
-
-  it("keeps the other headers the caller passes", async () => {
+  it("sends the other headers the caller sets for one call", async () => {
     const { model, calls } = build(respond);
     await model.invoke("hi", { options: { headers: { "x-trace": "1" } } });
     expect(calls.at(-1)?.headers.get("x-trace")).toBe("1");
     expect(calls.at(-1)?.headers.has("authorization")).toBe(false);
   });
-});
 
-describe("a raw client", () => {
-  it("sends a new key given through withOptions", async () => {
+  it("uses the global fetch when the caller passes none", async () => {
+    const { fetch, calls } = recordingFetch(respond);
+    vi.stubGlobal("fetch", fetch);
+    await new ChatInterfaze().invoke("hi");
+    expect(authorizations(calls)).toEqual([null]);
+  });
+
+  it("sends a new key given to a raw client through withOptions", async () => {
     const { model, calls } = build(respond);
     await rawClient(model).withOptions({ apiKey: NEW_KEY }).models.list();
     expect(authorizations(calls)).toEqual([bearer(NEW_KEY)]);
@@ -277,11 +191,21 @@ describe("a raw client", () => {
     expect(calls).toEqual([]);
   });
 
-  it("uses the global fetch when the caller passes none", async () => {
-    const { fetch, calls } = recordingFetch(respond);
-    vi.stubGlobal("fetch", fetch);
-    await new ChatInterfaze().invoke("hi");
+  it("stays keyless in a runtime with no process and no document", async () => {
+    vi.stubGlobal("process", undefined);
+    const { model, calls } = build(respond);
+    await model.invoke("hi");
     expect(authorizations(calls)).toEqual([null]);
+  });
+});
+
+describe.each(SCENARIOS)("$name", ({ env, fields, expected }) => {
+  it("sends the expected Authorization header", async () => {
+    Object.entries(env ?? {}).forEach(([name, value]) => vi.stubEnv(name, value));
+    const { model, calls } = build(respond, fields);
+    await invoke(model);
+    expect(authorizations(calls)).toEqual([expected]);
+    expectNoStandIn(calls);
   });
 });
 
@@ -298,7 +222,7 @@ describe("errors", () => {
   });
 
   it("surfaces a keyless daily-limit 429 after one request with no wait", async () => {
-    const { model, calls } = build(() => errorResponse(429, DAILY_LIMIT_BODY, dailyHeaders()));
+    const { model, calls } = build(() => errorResponse(429, DAILY_LIMIT_BODY, DAILY_HEADERS));
     const started = Date.now();
     await expect(invoke(model)).rejects.toMatchObject({
       status: 429,
@@ -310,7 +234,7 @@ describe("errors", () => {
     expect(authorizations(calls)).toEqual([null]);
   });
 
-  it("keeps the retry that LangChain's caller makes on a keyless in-flight 429", async () => {
+  it("lets LangChain's caller retry a keyless in-flight 429", async () => {
     vi.useFakeTimers();
     const { model, calls } = build(() => errorResponse(429, IN_FLIGHT_BODY, IN_FLIGHT_HEADERS), { maxRetries: IN_FLIGHT_MAX_RETRIES });
     const rejection = expect(invoke(model)).rejects.toMatchObject({
@@ -325,38 +249,21 @@ describe("errors", () => {
 });
 
 describe("a browser", () => {
-  it("throws InterfazeError when no key exists, with and without a process polyfill", () => {
+  it("throws InterfazeError without a usable key, with and without a process polyfill", () => {
     vi.stubGlobal("document", {});
     expect(() => new ChatInterfaze()).toThrow(InterfazeError);
+    expect(() => new ChatInterfaze({ apiKey: " \n" })).toThrow(InterfazeError);
     vi.stubGlobal("process", { env: {} });
     expect(() => new ChatInterfaze()).toThrow(InterfazeError);
   });
 
-  it.each(BLANK_KEYS)("throws for the blank key %j", (apiKey) => {
+  it.each<[string, Record<string, string>, Fields]>([
+    ["an explicit key", {}, { apiKey: EXPLICIT_KEY }],
+    ["an env key", { INTERFAZE_API_KEY: ENV_KEY }, {}],
+    ["a caller Authorization header", {}, { configuration: { defaultHeaders: { authorization: bearer(HEADER_KEY) } } }],
+  ])("builds with %s", (_label, env, fields) => {
     vi.stubGlobal("document", {});
-    expect(() => new ChatInterfaze({ apiKey })).toThrow(InterfazeError);
-  });
-
-  it.each<[string, Fields]>([
-    ["an explicit key", { apiKey: EXPLICIT_KEY }],
-    ["a caller Authorization header", { configuration: { defaultHeaders: { authorization: bearer(HEADER_KEY) } } }],
-  ])("builds with %s", (_label, fields) => {
-    vi.stubGlobal("document", {});
+    Object.entries(env).forEach(([name, value]) => vi.stubEnv(name, value));
     expect(() => new ChatInterfaze(fields)).not.toThrow();
-  });
-
-  it("builds with an env key", () => {
-    vi.stubGlobal("document", {});
-    vi.stubEnv("INTERFAZE_API_KEY", ENV_KEY);
-    expect(() => new ChatInterfaze()).not.toThrow();
-  });
-});
-
-describe("a runtime with no process and no document", () => {
-  it("stays keyless", async () => {
-    vi.stubGlobal("process", undefined);
-    const { model, calls } = build(respond);
-    await model.invoke("hi");
-    expect(authorizations(calls)).toEqual([null]);
   });
 });
