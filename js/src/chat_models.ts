@@ -5,7 +5,14 @@ import type { ChatModelStreamEvent, FinishReason } from "@langchain/core/languag
 import { AIMessage, AIMessageChunk, type BaseMessage, isAIMessage } from "@langchain/core/messages";
 import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
 import { concat } from "@langchain/core/utils/stream";
-import { ChatOpenAICompletions, type ChatOpenAIFields, normalizeHeaders } from "@langchain/openai";
+import {
+  ChatOpenAICompletions,
+  type ChatOpenAIFields,
+  getHeadersWithUserAgent,
+  normalizeHeaders,
+  OpenAIClient,
+  type OpenAICoreRequestOptions,
+} from "@langchain/openai";
 import { INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError } from "interfaze";
 import { SideChannelFilter, stripSideChannels, TAG_RE } from "./side_channels.js";
 import { VERSION } from "./version.js";
@@ -22,6 +29,8 @@ const FINISH_REASONS: Record<string, FinishReason> = {
 };
 
 const DEFAULT_TIMEOUT_MS = 900_000;
+// LangChain's caller retries a failed request, so the openai-node client must not.
+const CLIENT_MAX_RETRIES = 0;
 
 const HEADER_SHOW_ADDITIONAL_INFO = "x-show-additional-info";
 const HEADER_BYPASS_MOA = "x-interfaze-bypass-moa";
@@ -29,16 +38,14 @@ const HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache";
 const HEADER_AUTHORIZATION = "authorization";
 
 // Satisfies openai-node, which refuses to build a client without a credential, on a model
-// with no Interfaze key. The fetch wrapper removes the Authorization header that
-// openai-node builds from it, so the value never leaves the process.
+// with no Interfaze key. InterfazeClient sends no Authorization header for it, so the value
+// never leaves the process.
 const KEYLESS_CREDENTIAL = "interfaze-keyless";
-const KEYLESS_AUTHORIZATION = `Bearer ${KEYLESS_CREDENTIAL}`;
 
 const BROWSER_MESSAGE = "Interfaze does not accept keyless requests from a browser. Pass an API key: `new ChatInterfaze({ apiKey })`.";
 
 type ApiKey = NonNullable<ChatOpenAIFields["apiKey"]>;
 type ApiKeySetter = Exclude<ApiKey, string>;
-type FetchLike = NonNullable<NonNullable<ChatOpenAIFields["configuration"]>["fetch"]>;
 
 /** How much Interfaze should reason before answering. Widens the parent's
  *  `reasoningEffort` to the full set of levels Interfaze accepts. */
@@ -283,19 +290,15 @@ function resolveKey(fields: ChatInterfazeFields): ApiKey | undefined {
   return explicit ?? usableKey(typeof process !== "undefined" ? process.env?.INTERFAZE_API_KEY : undefined);
 }
 
-/**
- * Wraps `fetch` for a keyless model. openai-node builds `Authorization: Bearer interfaze-keyless`
- * from the stand-in key; this removes exactly that value on every request the client sends, so
- * raw clients, `withOptions` and moderations stay keyless too. Any other Authorization header
- * passes through.
- */
-function withoutStandInKey(inner: FetchLike | undefined): FetchLike {
-  return (input, init) => {
-    const call = inner ?? globalThis.fetch;
-    const headers = new Headers(init?.headers);
-    if (headers.get(HEADER_AUTHORIZATION) === KEYLESS_AUTHORIZATION) headers.delete(HEADER_AUTHORIZATION);
-    return call(input, { ...init, headers });
-  };
+/** Sends no Authorization header for the stand-in key. `withOptions` copies keep this class. */
+class InterfazeClient extends OpenAIClient {
+  protected override bearerAuth(opts: Parameters<OpenAIClient["bearerAuth"]>[0]): ReturnType<OpenAIClient["bearerAuth"]> {
+    return this.apiKey === KEYLESS_CREDENTIAL ? Promise.resolve(undefined) : super.bearerAuth(opts);
+  }
+
+  protected override validateHeaders(...args: Parameters<OpenAIClient["validateHeaders"]>): void {
+    if (this.apiKey !== KEYLESS_CREDENTIAL) super.validateHeaders(...args);
+  }
 }
 
 /**
@@ -366,7 +369,6 @@ export class ChatInterfaze extends ChatOpenAICompletions {
         adminAPIKey: null,
         ...configuration,
         apiKey: key ?? KEYLESS_CREDENTIAL,
-        ...(key === undefined ? { fetch: withoutStandInKey(configuration?.fetch) } : {}),
         defaultHeaders,
       },
       __includeRawResponse: true,
@@ -374,6 +376,17 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     this.lc_serializable = false;
     this.interfazeReasoningEffort = reasoningEffort;
     this._addVersion("@interfaze-ai/langchain", VERSION);
+  }
+
+  // Builds the client the way the parent does, as an InterfazeClient.
+  override _getClientOptions(options: OpenAICoreRequestOptions | undefined): OpenAICoreRequestOptions {
+    this.client ??= new InterfazeClient({
+      ...this.clientConfig,
+      timeout: this.timeout,
+      maxRetries: CLIENT_MAX_RETRIES,
+      defaultHeaders: getHeadersWithUserAgent(this.clientConfig.defaultHeaders),
+    });
+    return super._getClientOptions(options);
   }
 
   // The parent spreads clientConfig wholesale, landing the api key and every default

@@ -72,12 +72,15 @@ const drain = async (iterator: AsyncIterator<unknown>): Promise<void> => {
 };
 
 type Fields = Partial<ChatInterfazeFields>;
-type Call = (model: ChatInterfaze) => Promise<unknown>;
+type Call = (model: ChatInterfaze, fetch: typeof globalThis.fetch) => Promise<unknown>;
 
-const build = (responder: (req: CapturedRequest) => Response, fields: Fields = {}): { model: ChatInterfaze; calls: CapturedRequest[] } => {
+const build = (
+  responder: (req: CapturedRequest) => Response,
+  fields: Fields = {}
+): { model: ChatInterfaze; calls: CapturedRequest[]; fetch: typeof globalThis.fetch } => {
   const { fetch, calls } = recordingFetch(responder);
   const model = new ChatInterfaze({ ...fields, configuration: { ...fields.configuration, fetch } });
-  return { model, calls };
+  return { model, calls, fetch };
 };
 
 const rawClient = (model: ChatInterfaze): ChatInterfaze["client"] => {
@@ -85,13 +88,21 @@ const rawClient = (model: ChatInterfaze): ChatInterfaze["client"] => {
   return model.client;
 };
 
-const invoke: Call = (model) => model.invoke("hi");
+const invoke = (model: ChatInterfaze): Promise<unknown> => model.invoke("hi");
 
 const PATHS: Array<[string, Call]> = [
   ["invoke", invoke],
   ["stream", (model) => model.stream("hi").then((chunks) => drain(chunks[Symbol.asyncIterator]()))],
   ["client.models.list", (model) => rawClient(model).models.list()],
+  ["moderateContent", (model) => model.moderateContent("hi")],
   ["client.withOptions", (model) => rawClient(model).withOptions({ timeout: CLIENT_TIMEOUT_MS }).models.list()],
+  [
+    "client.withOptions({ fetch })",
+    (model, fetch) =>
+      rawClient(model)
+        .withOptions({ fetch: (input, init) => fetch(input, init) })
+        .models.list(),
+  ],
 ];
 
 interface Scenario {
@@ -157,8 +168,8 @@ const expectNoStandIn = (calls: CapturedRequest[]): void =>
 describe("a model with no key", () => {
   it.each(PATHS)("%s sends no Authorization header", async (_label, call) => {
     vi.stubEnv("OPENAI_API_KEY", OPENAI_KEY);
-    const { model, calls } = build(respond);
-    await call(model);
+    const { model, calls, fetch } = build(respond);
+    await call(model, fetch);
     expect(calls.length).toBeGreaterThan(0);
     expect(authorizations(calls)).toEqual(calls.map(() => null));
     expectNoStandIn(calls);
@@ -187,8 +198,8 @@ describe("a model with no key", () => {
   it("sends no OPENAI_ADMIN_KEY from the environment on an admin endpoint", async () => {
     vi.stubEnv("OPENAI_ADMIN_KEY", ADMIN_KEY);
     const { model, calls } = build(respond);
-    await expect(rawClient(model).admin.organization.usage.completions({ start_time: 1 })).rejects.toThrow();
-    expect(calls).toEqual([]);
+    await rawClient(model).admin.organization.usage.completions({ start_time: 1 });
+    expect(authorizations(calls)).toEqual([null]);
   });
 
   it("stays keyless in a runtime with no process and no document", async () => {
@@ -196,6 +207,21 @@ describe("a model with no key", () => {
     const { model, calls } = build(respond);
     await model.invoke("hi");
     expect(authorizations(calls)).toEqual([null]);
+  });
+});
+
+describe("a model with a key", () => {
+  it.each(PATHS)("%s sends the key", async (_label, call) => {
+    const { model, calls, fetch } = build(respond, { apiKey: EXPLICIT_KEY });
+    await call(model, fetch);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(authorizations(calls)).toEqual(calls.map(() => bearer(EXPLICIT_KEY)));
+  });
+
+  it("refuses an admin endpoint with no admin key and sends nothing", async () => {
+    const { model, calls } = build(respond, { apiKey: EXPLICIT_KEY });
+    await expect(rawClient(model).admin.organization.usage.completions({ start_time: 1 })).rejects.toThrow("Could not resolve authentication method");
+    expect(calls).toEqual([]);
   });
 });
 

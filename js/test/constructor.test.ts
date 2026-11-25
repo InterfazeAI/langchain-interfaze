@@ -4,6 +4,7 @@ import { ChatInterfaze } from "../src/index.js";
 import { completion, jsonResponse, lastBody, mockChat } from "./helpers.js";
 
 const KEY = "INTERFAZE_API_KEY";
+const CLIENT_TIMEOUT_MS = 30_000;
 afterEach(() => {
   delete process.env[KEY];
 });
@@ -34,6 +35,16 @@ describe("ChatInterfaze constructor", () => {
   it("defaults to a long timeout but respects an override", () => {
     expect((new ChatInterfaze({ apiKey: "t" }) as unknown as { timeout?: number }).timeout).toBe(900_000);
     expect((new ChatInterfaze({ apiKey: "t", timeout: 30_000 }) as unknown as { timeout?: number }).timeout).toBe(30_000);
+  });
+
+  it("builds one client with the model's timeout and the LangChain User-Agent", async () => {
+    const { model, calls } = mockChat(() => jsonResponse(completion("Hi!")), { timeout: CLIENT_TIMEOUT_MS });
+    await model.invoke("hi");
+    const client = model.client;
+    await model.invoke("hi");
+    expect(model.client).toBe(client);
+    expect(client.timeout).toBe(CLIENT_TIMEOUT_MS);
+    expect(calls.map((c) => c.headers.get("user-agent"))).toEqual(calls.map(() => expect.stringMatching(/^langchainjs-openai\//)));
   });
 
   it("maps the interfaze control options onto request headers", () => {
