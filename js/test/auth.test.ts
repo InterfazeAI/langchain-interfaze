@@ -293,3 +293,27 @@ describe("a browser", () => {
     expect(() => new ChatInterfaze(fields)).not.toThrow();
   });
 });
+
+describe("a browser worker", () => {
+  const stubImportScripts = (): unknown => vi.stubGlobal("importScripts", () => {});
+
+  it("throws InterfazeError without a key", () => {
+    stubImportScripts();
+    expect(() => new ChatInterfaze()).toThrow(InterfazeError);
+  });
+
+  it("builds with a key and sends it", async () => {
+    stubImportScripts();
+    const { model, calls } = build(respond, { apiKey: EXPLICIT_KEY });
+    await model.invoke("hi");
+    expect(authorizations(calls)).toEqual([bearer(EXPLICIT_KEY)]);
+  });
+
+  it("stays keyless where WorkerGlobalScope exists but importScripts does not", async () => {
+    vi.stubGlobal("WorkerGlobalScope", class {});
+    vi.stubGlobal("ServiceWorkerGlobalScope", class {});
+    const { model, calls } = build(respond);
+    await model.invoke("hi");
+    expect(authorizations(calls)).toEqual([null]);
+  });
+});

@@ -42,6 +42,9 @@ const KEYLESS_CREDENTIAL = "interfaze-keyless";
 
 const BROWSER_MESSAGE = "Interfaze does not accept keyless requests from a browser. Pass an API key: `new ChatInterfaze({ apiKey })`.";
 
+// `importScripts` exists in every browser worker. Cloudflare Workers define `WorkerGlobalScope` but not `importScripts`.
+const isBrowserRuntime = (): boolean => "document" in globalThis || typeof Reflect.get(globalThis, "importScripts") === "function";
+
 type ApiKey = NonNullable<ChatOpenAIFields["apiKey"]>;
 type ApiKeySetter = Exclude<ApiKey, string>;
 
@@ -352,7 +355,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     const key = resolveKey(fields);
     const defaultHeaders = buildHeaders(fields);
     // A caller Authorization header counts as a key, so only a model with neither stays keyless.
-    if (key === undefined && !defaultHeaders?.[HEADER_AUTHORIZATION] && "document" in globalThis) throw new InterfazeError(BROWSER_MESSAGE);
+    if (key === undefined && !defaultHeaders?.[HEADER_AUTHORIZATION] && isBrowserRuntime()) throw new InterfazeError(BROWSER_MESSAGE);
     super({
       ...rest,
       apiKey: key ?? KEYLESS_CREDENTIAL,
