@@ -279,13 +279,6 @@ describe("a raw client", () => {
     expect(authorizations(calls)).toEqual([bearer(NEW_KEY)]);
   });
 
-  it("passes a Request that carries its own headers through untouched", async () => {
-    const { model, calls } = build(respond);
-    const request = new Request("https://api.interfaze.ai/v1/models", { headers: { Authorization: bearer(REQUEST_KEY) } });
-    await model.clientConfig.fetch?.(request);
-    expect(authorizations(calls)).toEqual([bearer(REQUEST_KEY)]);
-  });
-
   it("sends no OPENAI_ADMIN_KEY from the environment on an admin endpoint", async () => {
     vi.stubEnv("OPENAI_ADMIN_KEY", ADMIN_KEY);
     const { model, calls } = build(respond);

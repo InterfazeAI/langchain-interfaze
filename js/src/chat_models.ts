@@ -292,8 +292,7 @@ function resolveKey(fields: ChatInterfazeFields): ApiKey | undefined {
 function withoutStandInKey(inner: FetchLike | undefined): FetchLike {
   return (input, init) => {
     const call = inner ?? globalThis.fetch;
-    if (!init?.headers) return call(input, init);
-    const headers = new Headers(init.headers);
+    const headers = new Headers(init?.headers);
     if (headers.get(HEADER_AUTHORIZATION) === KEYLESS_AUTHORIZATION) headers.delete(HEADER_AUTHORIZATION);
     return call(input, { ...init, headers });
   };
