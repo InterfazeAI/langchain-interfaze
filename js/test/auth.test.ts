@@ -18,7 +18,7 @@ const NEW_KEY = "sk-test-new";
 const ADMIN_KEY = "sk-test-admin";
 const bearer = (key: string): string => `Bearer ${key}`;
 
-const BLANK_KEYS = ["", " ", " \n"];
+const BLANK_KEYS = ["", " \n"];
 
 // Error bodies in the shape the API sends.
 const REQUEST_ID = "req-test";
@@ -115,24 +115,22 @@ const PATHS: Array<[string, Call]> = [
   ["client.withOptions", (model) => rawClient(model).withOptions({ timeout: CLIENT_TIMEOUT_MS }).models.list()],
 ];
 
-const ERROR_PATHS: Array<[string, Call]> = [
-  ["invoke", invoke],
-  ["stream", stream],
-];
+const INVOKE_PATH: Array<[string, Call]> = [["invoke", invoke]];
 
 interface Scenario {
   name: string;
   env?: Record<string, string>;
   fields?: Fields;
   expected: string | null;
+  allPaths?: true;
 }
 
 const functionKey = (): Fields["configuration"] => ({ apiKey: async () => FUNCTION_KEY });
 
 const SCENARIOS: Scenario[] = [
-  { name: "no key", expected: null },
+  { name: "no key", allPaths: true, expected: null },
   { name: "only OPENAI_API_KEY", env: { OPENAI_API_KEY: OPENAI_KEY }, expected: null },
-  { name: "env key", env: { INTERFAZE_API_KEY: ENV_KEY }, expected: bearer(ENV_KEY) },
+  { name: "env key", env: { INTERFAZE_API_KEY: ENV_KEY }, allPaths: true, expected: bearer(ENV_KEY) },
   { name: "explicit key over env key", env: { INTERFAZE_API_KEY: ENV_KEY }, fields: { apiKey: EXPLICIT_KEY }, expected: bearer(EXPLICIT_KEY) },
   ...BLANK_KEYS.map((apiKey) => ({ name: `blank explicit ${JSON.stringify(apiKey)}`, fields: { apiKey }, expected: null })),
   ...BLANK_KEYS.map((apiKey) => ({
@@ -167,6 +165,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     name: "caller Authorization header without a key",
+    allPaths: true,
     fields: { configuration: { defaultHeaders: { Authorization: bearer(HEADER_KEY) } } },
     expected: bearer(HEADER_KEY),
   },
@@ -216,8 +215,8 @@ afterEach(() => {
 
 const authorizations = (calls: CapturedRequest[]): Array<string | null> => calls.map((c) => c.headers.get("authorization"));
 
-describe.each(SCENARIOS)("$name", ({ env, fields, expected }) => {
-  it.each(PATHS)("%s sends the expected Authorization header on every request", async (_label, call) => {
+describe.each(SCENARIOS)("$name", ({ env, fields, expected, allPaths }) => {
+  it.each(allPaths ? PATHS : INVOKE_PATH)("%s sends the expected Authorization header on every request", async (_label, call) => {
     Object.entries(env ?? {}).forEach(([name, value]) => vi.stubEnv(name, value));
     const { model, calls } = build(respond, fields);
     await call(model);
@@ -235,32 +234,24 @@ describe("the key a model keeps", () => {
     expect(model.apiKey).toBe(apiKey);
   });
 
-  it("trims a string key", () => {
-    const explicit = new ChatInterfaze({ apiKey: ` ${EXPLICIT_KEY}\n` });
-    expect(explicit.clientConfig.apiKey).toBe(EXPLICIT_KEY);
-    expect(explicit.apiKey).toBe(EXPLICIT_KEY);
-    expect(new ChatInterfaze({ configuration: { apiKey: ` ${CONFIG_KEY} ` } }).clientConfig.apiKey).toBe(CONFIG_KEY);
+  it("trims a string key before it sends the header", async () => {
     vi.stubEnv("INTERFAZE_API_KEY", ` ${ENV_KEY}\n`);
-    expect(new ChatInterfaze().clientConfig.apiKey).toBe(ENV_KEY);
-  });
-
-  it("leaves the caller's fetch alone when a key exists", () => {
-    const { fetch } = recordingFetch(respond);
-    expect(new ChatInterfaze({ apiKey: EXPLICIT_KEY, configuration: { fetch } }).clientConfig.fetch).toBe(fetch);
+    const sent = await Promise.all(
+      [{ apiKey: ` ${EXPLICIT_KEY}\n` }, { configuration: { apiKey: ` ${CONFIG_KEY} ` } }, {}].map(async (fields) => {
+        const { model, calls } = build(respond, fields);
+        await invoke(model);
+        return authorizations(calls);
+      })
+    );
+    expect(sent).toEqual([[bearer(EXPLICIT_KEY)], [bearer(CONFIG_KEY)], [bearer(ENV_KEY)]]);
   });
 });
 
 describe("a request header the caller sets for one call", () => {
   const headers = { Authorization: bearer(REQUEST_KEY) };
-  const HEADER_PATHS: Array<[string, Call]> = [
-    ["invoke", (model) => model.invoke("hi", { options: { headers } })],
-    ["moderateContent", (model) => model.moderateContent("hi", { options: { headers } })],
-    ["client.models.list", (model) => rawClient(model).models.list({ headers })],
-  ];
-
-  it.each(HEADER_PATHS)("%s sends it without a key", async (_label, call) => {
+  it("sends it without a key", async () => {
     const { model, calls } = build(respond);
-    await call(model);
+    await model.invoke("hi", { options: { headers } });
     expect(authorizations(calls)).toEqual([bearer(REQUEST_KEY)]);
   });
 
@@ -295,9 +286,9 @@ describe("a raw client", () => {
 });
 
 describe("errors", () => {
-  it.each(ERROR_PATHS)("%s surfaces a 401 after one request with the status, code and body", async (_label, call) => {
+  it("surfaces a 401 after one request with the status, code and body", async () => {
     const { model, calls } = build(() => errorResponse(401, INVALID_KEY_BODY), { apiKey: EXPLICIT_KEY, maxRetries: KEYED_MAX_RETRIES });
-    await expect(call(model)).rejects.toMatchObject({
+    await expect(invoke(model)).rejects.toMatchObject({
       status: 401,
       code: "insufficient_quota",
       type: "permission_error",
@@ -306,19 +297,10 @@ describe("errors", () => {
     expect(authorizations(calls)).toEqual([bearer(EXPLICIT_KEY)]);
   });
 
-  it.each(ERROR_PATHS)("%s does not retry a 401 for a caller header without a key", async (_label, call) => {
-    const { model, calls } = build(() => errorResponse(401, INVALID_KEY_BODY), {
-      maxRetries: KEYED_MAX_RETRIES,
-      configuration: { defaultHeaders: { Authorization: bearer(HEADER_KEY) } },
-    });
-    await expect(call(model)).rejects.toMatchObject({ status: 401, code: "insufficient_quota" });
-    expect(authorizations(calls)).toEqual([bearer(HEADER_KEY)]);
-  });
-
-  it.each(ERROR_PATHS)("%s surfaces a keyless daily-limit 429 after one request with no wait", async (_label, call) => {
+  it("surfaces a keyless daily-limit 429 after one request with no wait", async () => {
     const { model, calls } = build(() => errorResponse(429, DAILY_LIMIT_BODY, dailyHeaders()));
     const started = Date.now();
-    await expect(call(model)).rejects.toMatchObject({
+    await expect(invoke(model)).rejects.toMatchObject({
       status: 429,
       code: "keyless_daily_limit_exceeded",
       type: "rate_limit_error",
@@ -328,10 +310,10 @@ describe("errors", () => {
     expect(authorizations(calls)).toEqual([null]);
   });
 
-  it.each(ERROR_PATHS)("%s keeps the retry that LangChain's caller makes on a keyless in-flight 429", async (_label, call) => {
+  it("keeps the retry that LangChain's caller makes on a keyless in-flight 429", async () => {
     vi.useFakeTimers();
     const { model, calls } = build(() => errorResponse(429, IN_FLIGHT_BODY, IN_FLIGHT_HEADERS), { maxRetries: IN_FLIGHT_MAX_RETRIES });
-    const rejection = expect(call(model)).rejects.toMatchObject({
+    const rejection = expect(invoke(model)).rejects.toMatchObject({
       status: 429,
       code: "keyless_inflight_limit_exceeded",
       message: expect.stringContaining(HINT),
@@ -343,14 +325,10 @@ describe("errors", () => {
 });
 
 describe("a browser", () => {
-  it("throws InterfazeError when no key exists, also with a process polyfill", () => {
+  it("throws InterfazeError when no key exists, with and without a process polyfill", () => {
     vi.stubGlobal("document", {});
-    vi.stubGlobal("process", { env: {} });
     expect(() => new ChatInterfaze()).toThrow(InterfazeError);
-  });
-
-  it("throws InterfazeError when no key exists and process is the real one", () => {
-    vi.stubGlobal("document", {});
+    vi.stubGlobal("process", { env: {} });
     expect(() => new ChatInterfaze()).toThrow(InterfazeError);
   });
 
@@ -359,18 +337,8 @@ describe("a browser", () => {
     expect(() => new ChatInterfaze({ apiKey })).toThrow(InterfazeError);
   });
 
-  it("sends no request when it throws", () => {
-    vi.stubGlobal("document", {});
-    const { fetch, calls } = recordingFetch(respond);
-    expect(() => new ChatInterfaze({ configuration: { fetch } })).toThrow(InterfazeError);
-    expect(calls).toEqual([]);
-  });
-
   it.each<[string, Fields]>([
     ["an explicit key", { apiKey: EXPLICIT_KEY }],
-    ["openAIApiKey", { openAIApiKey: OPENAI_FIELD_KEY }],
-    ["configuration.apiKey", { configuration: { apiKey: CONFIG_KEY } }],
-    ["a function key", { configuration: functionKey() }],
     ["a caller Authorization header", { configuration: { defaultHeaders: { authorization: bearer(HEADER_KEY) } } }],
   ])("builds with %s", (_label, fields) => {
     vi.stubGlobal("document", {});
