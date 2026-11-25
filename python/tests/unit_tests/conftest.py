@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 import pytest
 import respx
+from openai._base_client import AsyncAPIClient, SyncAPIClient
 
 CHAT_URL = "https://api.interfaze.ai/v1/chat/completions"
 VIDEO_URL = "https://download.samplelib.com/mp4/sample-5s.mp4"
@@ -19,6 +20,20 @@ def _no_env_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("INTERFAZE_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+
+
+@pytest.fixture
+def no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the wait between retries so a retry count costs no time."""
+
+    def sync_sleep(self: Any, **kwargs: Any) -> None:
+        return None
+
+    async def async_sleep(self: Any, **kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(SyncAPIClient, "_sleep_for_retry", sync_sleep)
+    monkeypatch.setattr(AsyncAPIClient, "_sleep_for_retry", async_sleep)
 
 
 _USAGE = {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
