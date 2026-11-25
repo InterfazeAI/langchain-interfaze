@@ -450,21 +450,17 @@ class ChatInterfaze(ChatOpenAI):
             default_headers=headers or None,
             **kwargs,
         )
+        # The parent builds plain OpenAI clients; a client the caller passes in stays as given.
+        if kwargs.get("root_client") is None and type(self.root_client) is OpenAI:
+            self.root_client.__class__ = _InterfazeOpenAI
+        if kwargs.get("root_async_client") is None and type(self.root_async_client) is AsyncOpenAI:
+            self.root_async_client.__class__ = _InterfazeAsyncOpenAI
 
     # Must be uniquely named: pydantic replaces same-named validators rather than chaining
     # them, so reusing the parent's name would drop its version entry.
     @model_validator(mode="after")
     def _set_interfaze_version(self) -> Self:
         self._add_version("interfaze-langchain", __version__)
-        return self
-
-    @model_validator(mode="after")
-    def _use_interfaze_clients(self) -> Self:
-        # The parent builds plain OpenAI clients; a client the caller passes in stays as given.
-        if type(self.root_client) is OpenAI:
-            self.root_client.__class__ = _InterfazeOpenAI
-        if type(self.root_async_client) is AsyncOpenAI:
-            self.root_async_client.__class__ = _InterfazeAsyncOpenAI
         return self
 
     @property

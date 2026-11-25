@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 import respx
-from openai import Omit
+from openai import AsyncOpenAI, Omit, OpenAI
 from pydantic import SecretStr
 
 from interfaze_langchain import ChatInterfaze
@@ -190,3 +190,18 @@ async def test_client_derived_without_a_new_key_stays_keyless() -> None:
 def test_raw_clients_exist_without_a_key() -> None:
     model = ChatInterfaze()
     assert None not in (model.root_client, model.client, model.root_async_client, model.async_client)
+
+
+def test_callers_own_clients_keep_their_class() -> None:
+    sync_client = OpenAI(api_key=EXPLICIT_KEY)
+    async_client = AsyncOpenAI(api_key=EXPLICIT_KEY)
+    model = ChatInterfaze(
+        client=sync_client.chat.completions,
+        root_client=sync_client,
+        async_client=async_client.chat.completions,
+        root_async_client=async_client,
+    )
+    assert model.root_client is sync_client
+    assert model.root_async_client is async_client
+    assert type(sync_client) is OpenAI
+    assert type(async_client) is AsyncOpenAI
