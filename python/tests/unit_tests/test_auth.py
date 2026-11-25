@@ -239,3 +239,14 @@ async def test_openai_admin_key_is_never_sent(
     assert not any(
         OPENAI_ADMIN_KEY in value for call in route.calls for value in call.request.headers.values()
     )
+
+
+@respx.mock
+async def test_user_agent_names_the_interfaze_clients() -> None:
+    route = mock_api()
+    model = ChatInterfaze()
+    model.root_client.models.list()
+    await model.root_async_client.models.list()
+    sync_agent, async_agent = (call.request.headers["user-agent"] for call in route.calls)
+    assert sync_agent.startswith("InterfazeOpenAI/Python")
+    assert async_agent.startswith("AsyncInterfazeOpenAI/Python")

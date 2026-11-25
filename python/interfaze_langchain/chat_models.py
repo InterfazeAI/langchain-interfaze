@@ -153,9 +153,10 @@ def _single_authorization(headers: httpx.Headers, caller: Mapping[str, Any]) -> 
     return httpx.Headers([*others, (_HEADER_AUTHORIZATION, values[-1])])
 
 
+# openai builds the User-Agent header from the class name, so the names omit the underscore.
 # The two clients below replace the plain OpenAI clients that ChatOpenAI builds, so every
 # path through `root_client`, `client`, `async_client`, `with_options` and `copy` shares them.
-class _InterfazeOpenAI(OpenAI):
+class InterfazeOpenAI(OpenAI):
     # openai reads OPENAI_ADMIN_KEY for its admin resources. No admin key may reach Interfaze.
     @property
     def _admin_api_key_auth(self) -> dict[str, str]:
@@ -173,7 +174,7 @@ class _InterfazeOpenAI(OpenAI):
         return _single_authorization(headers, {**self._custom_headers, **(options.headers or {})})
 
 
-class _InterfazeAsyncOpenAI(AsyncOpenAI):
+class AsyncInterfazeOpenAI(AsyncOpenAI):
     @property
     def _admin_api_key_auth(self) -> dict[str, str]:
         return {}
@@ -461,9 +462,9 @@ class ChatInterfaze(ChatOpenAI):
         )
         # The parent builds plain OpenAI clients; a client the caller passes in stays as given.
         if kwargs.get("root_client") is None and type(self.root_client) is OpenAI:
-            self.root_client.__class__ = _InterfazeOpenAI
+            self.root_client.__class__ = InterfazeOpenAI
         if kwargs.get("root_async_client") is None and type(self.root_async_client) is AsyncOpenAI:
-            self.root_async_client.__class__ = _InterfazeAsyncOpenAI
+            self.root_async_client.__class__ = AsyncInterfazeOpenAI
         # The stand-in key function stays in the built clients; the field holds a plain blank key.
         if key is None:
             self.openai_api_key = SecretStr("")
