@@ -92,6 +92,11 @@ def _keyless_api_key() -> str:
     return ""
 
 
+# langchain-openai wraps the sync stand-in for the async client, so that client gets its own.
+async def _keyless_async_api_key() -> str:
+    return ""
+
+
 def _trim_key(key: Any) -> Any:
     """Trim a string key; a blank key becomes empty. A callable passes through untouched."""
     text = key.get_secret_value() if isinstance(key, SecretStr) else key
@@ -114,9 +119,11 @@ class InterfazeOpenAI(OpenAI):
     def _admin_api_key_auth(self) -> dict[str, str]:
         return {}
 
-    # openai-python refuses a request with no Authorization header. Interfaze accepts it.
+    # openai-python refuses a request with no Authorization header. Interfaze accepts it
+    # from a keyless client only.
     def _validate_headers(self, *args: Any, **kwargs: Any) -> None:
-        return None
+        if self._api_key_provider is not _keyless_api_key:
+            super()._validate_headers(*args, **kwargs)
 
 
 class AsyncInterfazeOpenAI(AsyncOpenAI):
@@ -125,7 +132,8 @@ class AsyncInterfazeOpenAI(AsyncOpenAI):
         return {}
 
     def _validate_headers(self, *args: Any, **kwargs: Any) -> None:
-        return None
+        if self._api_key_provider is not _keyless_async_api_key:
+            super()._validate_headers(*args, **kwargs)
 
 
 def _digest(value: str) -> str:
@@ -412,6 +420,8 @@ class ChatInterfaze(ChatOpenAI):
             self.root_client.__class__ = InterfazeOpenAI
         if kwargs.get("root_async_client") is None and type(self.root_async_client) is AsyncOpenAI:
             self.root_async_client.__class__ = AsyncInterfazeOpenAI
+            if key is None:
+                self.root_async_client._api_key_provider = _keyless_async_api_key
         # The stand-in key function stays in the built clients; the field holds a plain blank key.
         if key is None:
             self.openai_api_key = SecretStr("")

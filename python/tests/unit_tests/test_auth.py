@@ -194,19 +194,31 @@ async def test_keyless_model_serializes_and_sends_no_key(monkeypatch: pytest.Mon
 
 @respx.mock
 @pytest.mark.skipif(not hasattr(OpenAI, "admin"), reason="This openai has no admin resource.")
-@pytest.mark.parametrize("kwargs", [{}, {"api_key": EXPLICIT_KEY}], ids=["no key", "api_key"])
-async def test_openai_admin_key_is_never_sent(
-    monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, Any]
-) -> None:
+async def test_openai_admin_key_is_never_sent(monkeypatch: pytest.MonkeyPatch) -> None:
     route = mock_api()
     monkeypatch.setenv("OPENAI_ADMIN_KEY", OPENAI_ADMIN_KEY)
-    model = ChatInterfaze(**kwargs)
+    model = ChatInterfaze()
     model.root_client.admin.organization.admin_api_keys.list()
     await model.root_async_client.admin.organization.admin_api_keys.list()
     assert sent_authorization(route) == [[]] * 2
     assert not any(
         OPENAI_ADMIN_KEY in value for call in route.calls for value in call.request.headers.values()
     )
+
+
+@respx.mock
+@pytest.mark.skipif(not hasattr(OpenAI, "admin"), reason="This openai has no admin resource.")
+async def test_keyed_client_refuses_an_admin_request_without_an_admin_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route = mock_api()
+    monkeypatch.setenv("OPENAI_ADMIN_KEY", OPENAI_ADMIN_KEY)
+    model = ChatInterfaze(api_key=EXPLICIT_KEY)
+    with pytest.raises(TypeError, match="Could not resolve authentication method"):
+        model.root_client.admin.organization.admin_api_keys.list()
+    with pytest.raises(TypeError, match="Could not resolve authentication method"):
+        await model.root_async_client.admin.organization.admin_api_keys.list()
+    assert not route.called
 
 
 @respx.mock
@@ -218,3 +230,12 @@ async def test_user_agent_names_the_interfaze_clients() -> None:
     sync_agent, async_agent = (call.request.headers["user-agent"] for call in route.calls)
     assert sync_agent.startswith("InterfazeOpenAI/Python")
     assert async_agent.startswith("AsyncInterfazeOpenAI/Python")
+
+
+@respx.mock
+@pytest.mark.parametrize("call", [_invoke, _ainvoke], ids=["invoke", "ainvoke"])
+async def test_key_function_returning_blank_raises_before_any_request(call: Call) -> None:
+    route = mock_api()
+    with pytest.raises(TypeError, match="Could not resolve authentication method"):
+        await call(ChatInterfaze(api_key=lambda: ""))
+    assert not route.called
