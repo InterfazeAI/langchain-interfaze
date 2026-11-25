@@ -27,7 +27,7 @@ Without an API key, `ChatInterfaze` sends requests with no `Authorization` heade
 
 Keyless access needs a release of `interfaze-langchain` later than 1.0.0. `ChatInterfaze` does not read `OPENAI_API_KEY`.
 
-When the keyless daily limit is reached, the client throws the `429` at once and does not retry it.
+When the keyless daily limit is reached, the client throws the `429` without a retry, unless the limit resets within the next minute.
 
 ## Your first request
 
