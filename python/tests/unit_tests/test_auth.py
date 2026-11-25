@@ -205,3 +205,16 @@ def test_callers_own_clients_keep_their_class() -> None:
     assert model.root_async_client is async_client
     assert type(sync_client) is OpenAI
     assert type(async_client) is AsyncOpenAI
+
+
+@respx.mock
+async def test_keyless_model_serializes_and_still_sends_no_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    route = mock_api()
+    monkeypatch.setenv("OPENAI_API_KEY", OPENAI_KEY)
+    model = ChatInterfaze()
+    assert model.model_dump_json()
+    assert model.openai_api_key == SecretStr("")
+    model.invoke(MESSAGES)
+    model.root_client.with_options(timeout=5).models.list()
+    assert sent_authorization(route) == [[], []]
+    assert not _leaks_openai_key(route)

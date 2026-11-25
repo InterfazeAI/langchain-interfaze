@@ -455,6 +455,9 @@ class ChatInterfaze(ChatOpenAI):
             self.root_client.__class__ = _InterfazeOpenAI
         if kwargs.get("root_async_client") is None and type(self.root_async_client) is AsyncOpenAI:
             self.root_async_client.__class__ = _InterfazeAsyncOpenAI
+        # The stand-in key function stays in the built clients; the field holds a plain blank key.
+        if key is None:
+            self.openai_api_key = SecretStr("")
 
     # Must be uniquely named: pydantic replaces same-named validators rather than chaining
     # them, so reusing the parent's name would drop its version entry.
