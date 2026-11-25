@@ -261,6 +261,8 @@ function buildHeaders(fields: ChatInterfazeFields): Record<string, string> | und
       if (typeof value === "number" || typeof value === "boolean") headers[key.toLowerCase()] = String(value);
     }
   }
+  // A blank Authorization header counts as unset, like a blank key.
+  if (headers[HEADER_AUTHORIZATION] === "") delete headers[HEADER_AUTHORIZATION];
   if (fields.showAdditionalInfo) headers[HEADER_SHOW_ADDITIONAL_INFO] = "true";
   if (fields.bypassMoA) headers[HEADER_BYPASS_MOA] = "true";
   if (fields.bypassCache) headers[HEADER_BYPASS_CACHE] = "true";
@@ -364,7 +366,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
         ...configuration,
         apiKey: key ?? KEYLESS_CREDENTIAL,
         ...(key === undefined ? { fetch: withoutStandInKey(configuration?.fetch) } : {}),
-        ...(defaultHeaders ? { defaultHeaders } : {}),
+        defaultHeaders,
       },
       __includeRawResponse: true,
     });

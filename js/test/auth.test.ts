@@ -179,6 +179,16 @@ const SCENARIOS: Scenario[] = [
     fields: { configuration: { defaultHeaders: new Headers({ Authorization: bearer(HEADER_KEY) }) } },
     expected: bearer(HEADER_KEY),
   },
+  ...BLANK_KEYS.map((value) => ({
+    name: `blank caller Authorization header ${JSON.stringify(value)} without a key`,
+    fields: { configuration: { defaultHeaders: { Authorization: value } } },
+    expected: null,
+  })),
+  ...BLANK_KEYS.map((value) => ({
+    name: `blank caller Authorization header ${JSON.stringify(value)} with an explicit key`,
+    fields: { apiKey: EXPLICIT_KEY, configuration: { defaultHeaders: { Authorization: value } } },
+    expected: bearer(EXPLICIT_KEY),
+  })),
   {
     name: "caller Authorization header over an explicit key",
     fields: { apiKey: EXPLICIT_KEY, configuration: { defaultHeaders: { AUTHORIZATION: bearer(HEADER_KEY) } } },
