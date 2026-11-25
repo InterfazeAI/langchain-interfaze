@@ -37,9 +37,7 @@ const HEADER_BYPASS_MOA = "x-interfaze-bypass-moa";
 const HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache";
 const HEADER_AUTHORIZATION = "authorization";
 
-// Satisfies openai-node, which refuses to build a client without a credential, on a model
-// with no Interfaze key. InterfazeClient sends no Authorization header for it, so the value
-// never leaves the process.
+// openai-node needs a credential to build a client. InterfazeClient never sends this one.
 const KEYLESS_CREDENTIAL = "interfaze-keyless";
 
 const BROWSER_MESSAGE = "Interfaze does not accept keyless requests from a browser. Pass an API key: `new ChatInterfaze({ apiKey })`.";
@@ -268,7 +266,6 @@ function buildHeaders(fields: ChatInterfazeFields): Record<string, string> | und
       if (typeof value === "number" || typeof value === "boolean") headers[key.toLowerCase()] = String(value);
     }
   }
-  // A blank Authorization header counts as unset, like a blank key.
   if (headers[HEADER_AUTHORIZATION] === "") delete headers[HEADER_AUTHORIZATION];
   if (fields.showAdditionalInfo) headers[HEADER_SHOW_ADDITIONAL_INFO] = "true";
   if (fields.bypassMoA) headers[HEADER_BYPASS_MOA] = "true";
@@ -278,13 +275,11 @@ function buildHeaders(fields: ChatInterfazeFields): Record<string, string> | und
 
 const isKeySetter = (value: unknown): value is ApiKeySetter => typeof value === "function";
 
-/** Trims a string key, so a blank string counts as unset. A function key passes through untouched. */
 function usableKey(value: unknown): ApiKey | undefined {
   if (typeof value === "string") return value.trim() || undefined;
   return isKeySetter(value) ? value : undefined;
 }
 
-// An explicit key beats INTERFAZE_API_KEY. Without `process` there is no environment key.
 function resolveKey(fields: ChatInterfazeFields): ApiKey | undefined {
   const explicit = [fields.apiKey, fields.openAIApiKey, fields.configuration?.apiKey].map(usableKey).find((key) => key !== undefined);
   return explicit ?? usableKey(typeof process !== "undefined" ? process.env?.INTERFAZE_API_KEY : undefined);
