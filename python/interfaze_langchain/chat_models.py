@@ -5,6 +5,7 @@ import itertools
 import json
 import os
 import re
+import secrets
 import warnings
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
@@ -147,6 +148,8 @@ def _digest(value: str) -> str:
 # One id for each key function, so the cache key tells two functions apart without exposing either.
 _KEY_FUNCTION_IDS: weakref.WeakKeyDictionary[Callable[..., Any], int] = weakref.WeakKeyDictionary()
 _KEY_FUNCTION_COUNTER = itertools.count(1)
+# Counters restart in every process, so this token keeps a shared LLM cache from mixing processes' ids.
+_PROCESS_TOKEN = secrets.token_hex(8)
 
 
 def _key_function_id(function: Callable[..., Any]) -> int:
@@ -452,7 +455,7 @@ class ChatInterfaze(ChatOpenAI):
         if isinstance(self.openai_api_key, SecretStr):
             params["interfaze_key"] = _digest(self.openai_api_key.get_secret_value())
         elif callable(self.openai_api_key):
-            params["interfaze_key"] = f"function-{_key_function_id(self.openai_api_key)}"
+            params["interfaze_key"] = f"function-{_PROCESS_TOKEN}-{_key_function_id(self.openai_api_key)}"
         if self.default_headers:
             params["interfaze_headers"] = _redact_headers(self.default_headers)
         return params

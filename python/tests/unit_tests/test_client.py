@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from collections.abc import Iterator
 from typing import Any
 
@@ -148,6 +150,24 @@ def test_cache_key_is_the_same_for_one_key_function() -> None:
         return "sk_tenant_a"
 
     assert ChatInterfaze(api_key=key)._get_llm_string() == ChatInterfaze(api_key=key)._get_llm_string()
+
+
+# Each process numbers its key functions from 1, so a shared LLM cache sees the same count twice.
+_FIRST_KEY_FUNCTION_ID = (
+    "import warnings; warnings.simplefilter('ignore');"
+    "from interfaze_langchain import ChatInterfaze;"
+    "print(ChatInterfaze(api_key=lambda: 'sk')._identifying_params['interfaze_key'])"
+)
+
+
+def test_cache_key_separates_key_functions_from_two_processes() -> None:
+    ids = {
+        subprocess.run(
+            [sys.executable, "-c", _FIRST_KEY_FUNCTION_ID], capture_output=True, text=True, check=True
+        ).stdout
+        for _ in range(2)
+    }
+    assert len(ids) == 2
 
 
 @pytest.fixture

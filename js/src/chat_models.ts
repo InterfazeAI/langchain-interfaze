@@ -252,6 +252,8 @@ const digest = (value: string): string => {
 
 const keySetterIds = new WeakMap<ApiKeySetter, number>();
 const keySetterCount = { value: 0 };
+// Counters restart in every process, so this token keeps a shared LLM cache from mixing processes' ids.
+const PROCESS_TOKEN = Array.from(globalThis.crypto.getRandomValues(new Uint32Array(2)), (part) => part.toString(16)).join("");
 
 /** A function key has no value to hash, so each function gets a stable id for the cache key. */
 const keySetterId = (setter: ApiKeySetter): number => {
@@ -410,7 +412,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     return {
       ...rest,
       ...(typeof apiKey === "string" ? { interfazeKey: digest(apiKey) } : {}),
-      ...(isKeySetter(apiKey) ? { interfazeKey: `function-${keySetterId(apiKey)}` } : {}),
+      ...(isKeySetter(apiKey) ? { interfazeKey: `function-${PROCESS_TOKEN}-${keySetterId(apiKey)}` } : {}),
       ...(defaultHeaders ? { interfazeHeaders: redactHeaders(defaultHeaders as Record<string, string>) } : {}),
     } as ReturnType<ChatOpenAICompletions["_identifyingParams"]>;
   }
