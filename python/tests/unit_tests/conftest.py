@@ -6,10 +6,42 @@ import operator
 from typing import Any
 
 import httpx
+import pytest
 import respx
+from openai._base_client import AsyncAPIClient, SyncAPIClient
+
+from interfaze_langchain import chat_models
 
 CHAT_URL = "https://api.interfaze.ai/v1/chat/completions"
 VIDEO_URL = "https://download.samplelib.com/mp4/sample-5s.mp4"
+
+
+# No test reads a key from the machine it runs on.
+@pytest.fixture(autouse=True)
+def _no_env_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("INTERFAZE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+
+
+# The keyless warning is an error under filterwarnings, so it counts as already shown.
+@pytest.fixture(autouse=True)
+def _keyless_warning_shown(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(chat_models, "_keyless_warned", True)
+
+
+# Skips the wait between retries, so a retry count costs no time.
+@pytest.fixture
+def no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    def sync_sleep(self: Any, **kwargs: Any) -> None:
+        return None
+
+    async def async_sleep(self: Any, **kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(SyncAPIClient, "_sleep_for_retry", sync_sleep)
+    monkeypatch.setattr(AsyncAPIClient, "_sleep_for_retry", async_sleep)
+
 
 _USAGE = {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
 

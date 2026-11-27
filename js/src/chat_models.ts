@@ -5,7 +5,14 @@ import type { ChatModelStreamEvent, FinishReason } from "@langchain/core/languag
 import { AIMessage, AIMessageChunk, type BaseMessage, isAIMessage } from "@langchain/core/messages";
 import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
 import { concat } from "@langchain/core/utils/stream";
-import { ChatOpenAICompletions, type ChatOpenAIFields, normalizeHeaders } from "@langchain/openai";
+import {
+  ChatOpenAICompletions,
+  type ChatOpenAIFields,
+  getHeadersWithUserAgent,
+  normalizeHeaders,
+  OpenAIClient,
+  type OpenAICoreRequestOptions,
+} from "@langchain/openai";
 import { INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError } from "interfaze";
 import { SideChannelFilter, stripSideChannels, TAG_RE } from "./side_channels.js";
 import { VERSION } from "./version.js";
@@ -22,10 +29,34 @@ const FINISH_REASONS: Record<string, FinishReason> = {
 };
 
 const DEFAULT_TIMEOUT_MS = 900_000;
+// LangChain's caller retries a failed request, so the openai-node client must not.
+const CLIENT_MAX_RETRIES = 0;
 
 const HEADER_SHOW_ADDITIONAL_INFO = "x-show-additional-info";
 const HEADER_BYPASS_MOA = "x-interfaze-bypass-moa";
 const HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache";
+const HEADER_AUTHORIZATION = "authorization";
+
+// openai-node needs a credential to build a client. InterfazeClient never sends this one.
+const KEYLESS_CREDENTIAL = "interfaze-keyless";
+
+const BROWSER_MESSAGE = "Interfaze does not accept keyless requests from a browser. Pass an API key: `new ChatInterfaze({ apiKey })`.";
+
+// `importScripts` exists in every browser worker. Cloudflare Workers define `WorkerGlobalScope` but not `importScripts`.
+const isBrowserRuntime = (): boolean => "document" in globalThis || typeof Reflect.get(globalThis, "importScripts") === "function";
+
+const KEYLESS_WARNING = "Interfaze SDK is running in keyless mode. For higher rate limits, get an API key at https://interfaze.ai/dashboard.";
+
+const keylessWarning = { shown: false };
+
+function warnKeylessOnce(): void {
+  if (keylessWarning.shown) return;
+  keylessWarning.shown = true;
+  console.warn(KEYLESS_WARNING);
+}
+
+type ApiKey = NonNullable<ChatOpenAIFields["apiKey"]>;
+type ApiKeySetter = Exclude<ApiKey, string>;
 
 /** How much Interfaze should reason before answering. Widens the parent's
  *  `reasoningEffort` to the full set of levels Interfaze accepts. */
@@ -34,7 +65,10 @@ export type InterfazeReasoningEffort = "minimal" | "low" | "medium" | "high" | "
 /** Constructor options for {@link ChatInterfaze}. Extends the standard
  *  `ChatOpenAIFields` with Interfaze-specific settings. */
 export interface ChatInterfazeFields extends Omit<ChatOpenAIFields, "reasoningEffort"> {
-  /** Interfaze API key. Falls back to the `INTERFAZE_API_KEY` environment variable. */
+  /** Interfaze API key. Falls back to the `INTERFAZE_API_KEY` environment variable. Without
+   *  either, requests carry no `Authorization` header and use Interfaze's keyless access.
+   *  A blank key counts as no key. `openAIApiKey` and `configuration.apiKey` also count as a
+   *  key. `OPENAI_API_KEY` is never read. */
   apiKey?: string;
   /** How hard the model should reason before answering. */
   reasoningEffort?: InterfazeReasoningEffort;
@@ -216,6 +250,20 @@ const digest = (value: string): string => {
   return (hash >>> 0).toString(16);
 };
 
+const keySetterIds = new WeakMap<ApiKeySetter, number>();
+const keySetterCount = { value: 0 };
+// Counters restart in every process, so this token keeps a shared LLM cache from mixing processes' ids.
+const PROCESS_TOKEN = Array.from(globalThis.crypto.getRandomValues(new Uint32Array(2)), (part) => part.toString(16)).join("");
+
+/** A function key has no value to hash, so each function gets a stable id for the cache key. */
+const keySetterId = (setter: ApiKeySetter): number => {
+  const known = keySetterIds.get(setter);
+  if (known !== undefined) return known;
+  keySetterCount.value += 1;
+  keySetterIds.set(setter, keySetterCount.value);
+  return keySetterCount.value;
+};
+
 const redactHeaders = (headers: Record<string, string>): string[] =>
   Object.keys(headers)
     .sort()
@@ -233,10 +281,34 @@ function buildHeaders(fields: ChatInterfazeFields): Record<string, string> | und
       if (typeof value === "number" || typeof value === "boolean") headers[key.toLowerCase()] = String(value);
     }
   }
+  if (headers[HEADER_AUTHORIZATION] === "") delete headers[HEADER_AUTHORIZATION];
   if (fields.showAdditionalInfo) headers[HEADER_SHOW_ADDITIONAL_INFO] = "true";
   if (fields.bypassMoA) headers[HEADER_BYPASS_MOA] = "true";
   if (fields.bypassCache) headers[HEADER_BYPASS_CACHE] = "true";
   return Object.keys(headers).length ? headers : undefined;
+}
+
+const isKeySetter = (value: unknown): value is ApiKeySetter => typeof value === "function";
+
+function usableKey(value: unknown): ApiKey | undefined {
+  if (typeof value === "string") return value.trim() || undefined;
+  return isKeySetter(value) ? value : undefined;
+}
+
+function resolveKey(fields: ChatInterfazeFields): ApiKey | undefined {
+  const explicit = [fields.apiKey, fields.openAIApiKey, fields.configuration?.apiKey].map(usableKey).find((key) => key !== undefined);
+  return explicit ?? usableKey(typeof process !== "undefined" ? process.env?.INTERFAZE_API_KEY : undefined);
+}
+
+/** Sends no Authorization header for the stand-in key. `withOptions` copies keep this class. */
+class InterfazeClient extends OpenAIClient {
+  protected override bearerAuth(opts: Parameters<OpenAIClient["bearerAuth"]>[0]): ReturnType<OpenAIClient["bearerAuth"]> {
+    return this.apiKey === KEYLESS_CREDENTIAL ? Promise.resolve(undefined) : super.bearerAuth(opts);
+  }
+
+  protected override validateHeaders(...args: Parameters<OpenAIClient["validateHeaders"]>): void {
+    if (this.apiKey !== KEYLESS_CREDENTIAL) super.validateHeaders(...args);
+  }
 }
 
 /**
@@ -275,32 +347,62 @@ export class ChatInterfaze extends ChatOpenAICompletions {
   /** Kept off the parent, whose `reasoningEffort` type is narrower than Interfaze accepts. */
   readonly interfazeReasoningEffort?: InterfazeReasoningEffort;
 
+  /** `true` when the model sends no `Authorization` header. */
+  readonly isKeyless: boolean;
+
   // Keyed on the call options, the one object the parent hands back to
   // completionWithRetry, so concurrent streams never share a sink.
   readonly #frameSinks = new WeakMap<object, Array<Record<string, unknown>>>();
 
   constructor(fields: ChatInterfazeFields = {}) {
-    const { apiKey, model, configuration, timeout, showAdditionalInfo, bypassMoA, bypassCache, reasoningEffort, ...rest } = fields;
-    const key = apiKey ?? (typeof process !== "undefined" ? process.env?.INTERFAZE_API_KEY : undefined);
-    if (!key) {
-      throw new InterfazeError("Missing API key. Pass new ChatInterfaze({ apiKey: ... }) or set the INTERFAZE_API_KEY environment variable.");
-    }
+    const {
+      apiKey: _apiKey,
+      openAIApiKey: _openAIApiKey,
+      model,
+      configuration,
+      timeout,
+      showAdditionalInfo,
+      bypassMoA,
+      bypassCache,
+      reasoningEffort,
+      ...rest
+    } = fields;
+    const key = resolveKey(fields);
     const defaultHeaders = buildHeaders(fields);
+    // A caller Authorization header counts as a key, so only a model with neither stays keyless.
+    const keyless = key === undefined && !defaultHeaders?.[HEADER_AUTHORIZATION];
+    if (keyless && isBrowserRuntime()) throw new InterfazeError(BROWSER_MESSAGE);
+    if (keyless) warnKeylessOnce();
     super({
       ...rest,
-      apiKey: key,
+      apiKey: key ?? KEYLESS_CREDENTIAL,
       model: model ?? INTERFAZE_MODEL,
       timeout: timeout ?? DEFAULT_TIMEOUT_MS,
       configuration: {
         baseURL: INTERFAZE_BASE_URL,
+        // null stops openai-node from reading OPENAI_ADMIN_KEY into the Authorization header.
+        adminAPIKey: null,
         ...configuration,
-        ...(defaultHeaders ? { defaultHeaders } : {}),
+        apiKey: key ?? KEYLESS_CREDENTIAL,
+        defaultHeaders,
       },
       __includeRawResponse: true,
     });
     this.lc_serializable = false;
     this.interfazeReasoningEffort = reasoningEffort;
+    this.isKeyless = keyless;
     this._addVersion("@interfaze-ai/langchain", VERSION);
+  }
+
+  // Builds the client the way the parent does, as an InterfazeClient.
+  override _getClientOptions(options: OpenAICoreRequestOptions | undefined): OpenAICoreRequestOptions {
+    this.client ??= new InterfazeClient({
+      ...this.clientConfig,
+      timeout: this.timeout,
+      maxRetries: CLIENT_MAX_RETRIES,
+      defaultHeaders: getHeadersWithUserAgent(this.clientConfig.defaultHeaders),
+    });
+    return super._getClientOptions(options);
   }
 
   // The parent spreads clientConfig wholesale, landing the api key and every default
@@ -310,6 +412,7 @@ export class ChatInterfaze extends ChatOpenAICompletions {
     return {
       ...rest,
       ...(typeof apiKey === "string" ? { interfazeKey: digest(apiKey) } : {}),
+      ...(isKeySetter(apiKey) ? { interfazeKey: `function-${PROCESS_TOKEN}-${keySetterId(apiKey)}` } : {}),
       ...(defaultHeaders ? { interfazeHeaders: redactHeaders(defaultHeaders as Record<string, string>) } : {}),
     } as ReturnType<ChatOpenAICompletions["_identifyingParams"]>;
   }

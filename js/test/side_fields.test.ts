@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { ChatInterfaze } from "../src/index.js";
 import { chunk, completion, envelopeChunk, jsonResponse, mockChat, sseResponse } from "./helpers.js";
@@ -81,6 +81,26 @@ describe("identifying params", () => {
     const a = new ChatInterfaze({ apiKey: "k", configuration: { defaultHeaders: { "x-tenant": "a" } } });
     const b = new ChatInterfaze({ apiKey: "k", configuration: { defaultHeaders: { "x-tenant": "b" } } });
     expect(JSON.stringify(a._identifyingParams())).not.toEqual(JSON.stringify(b._identifyingParams()));
+  });
+
+  it("keeps two function keys in separate cache entries", () => {
+    const fingerprint = (apiKey: () => Promise<string>): string =>
+      JSON.stringify(new ChatInterfaze({ configuration: { apiKey } })._identifyingParams());
+    const first = async (): Promise<string> => "first";
+    const second = async (): Promise<string> => "second";
+    expect(fingerprint(first)).not.toEqual(fingerprint(second));
+    expect(fingerprint(first)).toEqual(fingerprint(first));
+  });
+
+  it("keeps function keys from two processes in separate cache entries", async () => {
+    // A fresh module stands in for another process: its key-function counter restarts too.
+    const firstKeyFunctionId = async (): Promise<unknown> => {
+      vi.resetModules();
+      const fresh = await import("../src/index.js");
+      const model = new fresh.ChatInterfaze({ configuration: { apiKey: async () => "k" } });
+      return (model._identifyingParams() as unknown as Record<string, unknown>).interfazeKey;
+    };
+    expect(await firstKeyFunctionId()).not.toEqual(await firstKeyFunctionId());
   });
 
   it("shows the flags it owns in the clear", () => {

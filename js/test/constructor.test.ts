@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError } from "interfaze";
+import { INTERFAZE_BASE_URL, INTERFAZE_MODEL } from "interfaze";
 import { ChatInterfaze } from "../src/index.js";
 import { completion, jsonResponse, lastBody, mockChat } from "./helpers.js";
 
 const KEY = "INTERFAZE_API_KEY";
+const CLIENT_TIMEOUT_MS = 30_000;
 afterEach(() => {
   delete process.env[KEY];
 });
@@ -21,12 +22,6 @@ describe("ChatInterfaze constructor", () => {
     expect((model as unknown as { clientConfig: { baseURL?: string } }).clientConfig.baseURL).toBe("https://example.com/v1");
   });
 
-  it("throws InterfazeError when no api key is present", () => {
-    delete process.env[KEY];
-    expect(() => new ChatInterfaze()).toThrow(InterfazeError);
-    expect(() => new ChatInterfaze()).toThrow(/Missing API key/);
-  });
-
   it("reads the api key from INTERFAZE_API_KEY", () => {
     process.env[KEY] = "env-key";
     expect(() => new ChatInterfaze()).not.toThrow();
@@ -40,6 +35,16 @@ describe("ChatInterfaze constructor", () => {
   it("defaults to a long timeout but respects an override", () => {
     expect((new ChatInterfaze({ apiKey: "t" }) as unknown as { timeout?: number }).timeout).toBe(900_000);
     expect((new ChatInterfaze({ apiKey: "t", timeout: 30_000 }) as unknown as { timeout?: number }).timeout).toBe(30_000);
+  });
+
+  it("builds one client with the model's timeout and the LangChain User-Agent", async () => {
+    const { model, calls } = mockChat(() => jsonResponse(completion("Hi!")), { timeout: CLIENT_TIMEOUT_MS });
+    await model.invoke("hi");
+    const client = model.client;
+    await model.invoke("hi");
+    expect(model.client).toBe(client);
+    expect(client.timeout).toBe(CLIENT_TIMEOUT_MS);
+    expect(calls.map((c) => c.headers.get("user-agent"))).toEqual(calls.map(() => expect.stringMatching(/^langchainjs-openai\//)));
   });
 
   it("maps the interfaze control options onto request headers", () => {
@@ -148,18 +153,5 @@ describe("header values", () => {
   it("keeps a scalar header value that normalizeHeaders would drop", () => {
     const model = new ChatInterfaze({ apiKey: "k", configuration: { defaultHeaders: { "X-Retries": 3, "x-debug": true } as never } });
     expect(model.clientConfig.defaultHeaders).toMatchObject({ "x-retries": "3", "x-debug": "true" });
-  });
-});
-
-describe("runtimes without process", () => {
-  it("throws InterfazeError rather than ReferenceError when process is absent", () => {
-    const saved = globalThis.process;
-    // @ts-expect-error simulating a browser/edge bundle
-    delete globalThis.process;
-    try {
-      expect(() => new ChatInterfaze()).toThrow(InterfazeError);
-    } finally {
-      globalThis.process = saved;
-    }
   });
 });

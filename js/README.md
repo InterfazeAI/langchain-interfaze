@@ -23,6 +23,19 @@ const llm = new ChatInterfaze({ apiKey: "sk_..." }); // or set INTERFAZE_API_KEY
 
 `ChatInterfaze` is a standard LangChain chat model, so the usual options (`temperature`, `maxTokens`, `timeout`, `reasoningEffort`, …) are forwarded; `configuration.baseURL` and `model` default to the Interfaze endpoint and `interfaze-beta`.
 
+### Keyless access
+
+```ts
+// No API key: Interfaze applies per-IP keyless limits. Server-side code only.
+const model = new ChatInterfaze();
+```
+
+`model.isKeyless` is `true` when the model has no API key.
+
+See [Try Interfaze without an API key](https://interfaze.ai/docs#try-interfaze-without-an-api-key) for the limits and rules.
+
+Keyless access needs a release of `@interfaze-ai/langchain` later than 1.0.0.
+
 ## Your first request
 
 Extract structured data from an ID. Interfaze runs OCR for you, `withStructuredOutput` returns your schema, and the raw OCR lands on `response_metadata.precontext` — keep both with `includeRaw`:
@@ -247,7 +260,7 @@ For the one-shot `tasks.*` helpers ([run_task](https://interfaze.ai/docs/run-tas
 import { BadRequestError, InterfazeError, RateLimitError } from "interfaze";
 ```
 
-`ChatInterfaze` raises `InterfazeError` for client-side problems (a missing API key). Everything else is an `APIError` subclass carrying `status` and `code` - `BadRequestError` (400), `AuthenticationError` (401), `RateLimitError` (429), and so on.
+`ChatInterfaze` raises `InterfazeError` for client-side problems, for example a `file_id` content block or a keyless model in a browser. Everything else is an `APIError` subclass carrying `status` and `code` - `BadRequestError` (400), `AuthenticationError` (401), `RateLimitError` (429), and so on. When the API rejects your key, you get a `401` error, and `ChatInterfaze` does not send the call again without the key. When a keyless call reaches a limit, you get a `429` error with a message that tells you how to get a key. `@langchain/openai` and `interfaze` can install separate copies of `openai`, so `instanceof RateLimitError` can fail for an error from `ChatInterfaze`: check `error.status` and `error.code` instead.
 
 ## Capabilities
 

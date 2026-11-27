@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import re
-from collections.abc import AsyncIterator, Iterator, Mapping
+import secrets
+import warnings
+import weakref
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from typing import Any, NamedTuple
 
 from interfaze import (
@@ -22,6 +26,7 @@ from langchain_core.language_models import LanguageModelInput
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_openai import ChatOpenAI
+from openai import AsyncOpenAI, OpenAI
 from pydantic import SecretStr, model_validator
 from typing_extensions import Self
 
@@ -34,6 +39,15 @@ _DEFAULT_TIMEOUT = 900.0
 _HEADER_SHOW_ADDITIONAL_INFO = "x-show-additional-info"
 _HEADER_BYPASS_MOA = "x-interfaze-bypass-moa"
 _HEADER_BYPASS_CACHE = "x-interfaze-bypass-cache"
+
+_ENV_API_KEY = "INTERFAZE_API_KEY"
+
+_KEYLESS_WARNING = (
+    "Interfaze SDK is running in keyless mode. For higher rate limits, get an API key at "
+    "https://interfaze.ai/dashboard."
+)
+
+_keyless_warned = False
 
 _SIDE_FIELDS = ("precontext", "reasoning", "vcache")
 
@@ -74,8 +88,72 @@ def _default_role(response: Any, part_key: str) -> None:
             part.role = "assistant"
 
 
+_ResolvedKey = SecretStr | Callable[[], str] | Callable[[], Awaitable[str]]
+_ApiKey = str | _ResolvedKey | None
+
+
+# openai rejects an empty key but sends no Authorization header for a callable returning "".
+def _keyless_api_key() -> str:
+    return ""
+
+
+# langchain-openai wraps the sync stand-in for the async client, so that client gets its own.
+async def _keyless_async_api_key() -> str:
+    return ""
+
+
+# Trims a string key, so a blank key becomes "". A callable passes through untouched.
+def _trim_key(key: Any) -> Any:
+    text = key.get_secret_value() if isinstance(key, SecretStr) else key
+    return text.strip() if isinstance(text, str) else text
+
+
+# Returns the first usable key: an explicit one, then INTERFAZE_API_KEY, else None (keyless).
+def _resolve_key(*explicit: _ApiKey) -> _ResolvedKey | None:
+    candidates = (*(_trim_key(key) for key in explicit), _trim_key(os.environ.get(_ENV_API_KEY)))
+    key = next((candidate for candidate in candidates if candidate), None)
+    return SecretStr(key) if isinstance(key, str) else key
+
+
+# openai builds the User-Agent header from the class name, so the names omit the underscore.
+# The two clients below replace the plain OpenAI clients that ChatOpenAI builds, so every
+# path through `root_client`, `client`, `async_client`, `with_options` and `copy` shares them.
+class InterfazeOpenAI(OpenAI):
+    # openai reads OPENAI_ADMIN_KEY for its admin resources. No admin key may reach Interfaze.
+    @property
+    def _admin_api_key_auth(self) -> dict[str, str]:
+        return {}
+
+    # openai-python refuses a request with no Authorization header. Interfaze accepts it
+    # from a keyless client only.
+    def _validate_headers(self, *args: Any, **kwargs: Any) -> None:
+        if self._api_key_provider is not _keyless_api_key:
+            super()._validate_headers(*args, **kwargs)
+
+
+class AsyncInterfazeOpenAI(AsyncOpenAI):
+    @property
+    def _admin_api_key_auth(self) -> dict[str, str]:
+        return {}
+
+    def _validate_headers(self, *args: Any, **kwargs: Any) -> None:
+        if self._api_key_provider is not _keyless_async_api_key:
+            super()._validate_headers(*args, **kwargs)
+
+
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:12]
+
+
+# One id for each key function, so the cache key tells two functions apart without exposing either.
+_KEY_FUNCTION_IDS: weakref.WeakKeyDictionary[Callable[..., Any], int] = weakref.WeakKeyDictionary()
+_KEY_FUNCTION_COUNTER = itertools.count(1)
+# Counters restart in every process, so this token keeps a shared LLM cache from mixing processes' ids.
+_PROCESS_TOKEN = secrets.token_hex(8)
+
+
+def _key_function_id(function: Callable[..., Any]) -> int:
+    return _KEY_FUNCTION_IDS.setdefault(function, next(_KEY_FUNCTION_COUNTER))
 
 
 def _redact_headers(headers: Mapping[str, str]) -> list[str]:
@@ -308,7 +386,7 @@ class ChatInterfaze(ChatOpenAI):
     def __init__(
         self,
         *,
-        api_key: str | None = None,
+        api_key: _ApiKey = None,
         base_url: str | None = None,
         model: str | None = None,
         show_additional_info: bool = False,
@@ -320,14 +398,15 @@ class ChatInterfaze(ChatOpenAI):
         """The three flags map to Interfaze control headers. `show_additional_info` is the
         only way to get precontext while streaming; non-streaming responses always carry
         it. `bypass_cache` matters when you need `reasoning`, which a cache hit omits.
+
+        The key is `api_key`, then `openai_api_key`, then `INTERFAZE_API_KEY`. A blank string
+        is not a key. Without a key, requests carry no Authorization header and use
+        Interfaze's keyless access. `OPENAI_API_KEY` is never read.
         """
-        key = api_key or os.environ.get("INTERFAZE_API_KEY")
-        if not key:
-            raise InterfazeError(
-                "Missing API key. Pass ChatInterfaze(api_key=...) or set the INTERFAZE_API_KEY "
-                "environment variable."
-            )
+        key = _resolve_key(api_key, kwargs.pop("openai_api_key", None))
         headers = {k.lower(): str(v) for k, v in (default_headers or {}).items()}
+        if not headers.get("authorization", "").strip():
+            headers.pop("authorization", None)
         if show_additional_info:
             headers[_HEADER_SHOW_ADDITIONAL_INFO] = "true"
         if bypass_moa:
@@ -339,12 +418,26 @@ class ChatInterfaze(ChatOpenAI):
         kwargs.setdefault("stream_usage", True)
         kwargs["use_responses_api"] = False
         super().__init__(
-            api_key=SecretStr(key),
+            api_key=key or _keyless_api_key,
             base_url=base_url or INTERFAZE_BASE_URL,
             model=model or INTERFAZE_MODEL,
             default_headers=headers or None,
             **kwargs,
         )
+        # The parent builds plain OpenAI clients; a client the caller passes in stays as given.
+        if kwargs.get("root_client") is None and type(self.root_client) is OpenAI:
+            self.root_client.__class__ = InterfazeOpenAI
+        if kwargs.get("root_async_client") is None and type(self.root_async_client) is AsyncOpenAI:
+            self.root_async_client.__class__ = AsyncInterfazeOpenAI
+            if key is None:
+                self.root_async_client._api_key_provider = _keyless_async_api_key
+        # The stand-in key function stays in the built clients; the field holds a plain blank key.
+        if key is None:
+            self.openai_api_key = SecretStr("")
+            global _keyless_warned
+            if not _keyless_warned and "authorization" not in headers:
+                _keyless_warned = True
+                warnings.warn(_KEYLESS_WARNING, UserWarning, stacklevel=2)
 
     # Must be uniquely named: pydantic replaces same-named validators rather than chaining
     # them, so reusing the parent's name would drop its version entry.
@@ -358,9 +451,11 @@ class ChatInterfaze(ChatOpenAI):
         # Without these, set_llm_cache serves a bypass_cache model the plain model's answer,
         # and one tenant's key the answer cached under another's.
         params = {**super()._identifying_params, "_type": self._llm_type}
-        # A callable key resolves per request, so there is no stable value to key on.
+        # A key function resolves per request, so its id stands for it.
         if isinstance(self.openai_api_key, SecretStr):
             params["interfaze_key"] = _digest(self.openai_api_key.get_secret_value())
+        elif callable(self.openai_api_key):
+            params["interfaze_key"] = f"function-{_PROCESS_TOKEN}-{_key_function_id(self.openai_api_key)}"
         if self.default_headers:
             params["interfaze_headers"] = _redact_headers(self.default_headers)
         return params

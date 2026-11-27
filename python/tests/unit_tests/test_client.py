@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
 import respx
-from interfaze import INTERFAZE_BASE_URL, INTERFAZE_MODEL, InterfazeError
+from interfaze import INTERFAZE_BASE_URL, INTERFAZE_MODEL
+from langchain_core.caches import InMemoryCache
+from langchain_core.globals import set_llm_cache
 from langchain_core.messages import HumanMessage
 
 from interfaze_langchain import ChatInterfaze
@@ -21,12 +26,6 @@ def test_defaults_overridable() -> None:
     model = ChatInterfaze(api_key="t", base_url="https://example.com/v1", model="other-model")
     assert model.openai_api_base == "https://example.com/v1"
     assert model.model_name == "other-model"
-
-
-def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("INTERFAZE_API_KEY", raising=False)
-    with pytest.raises(InterfazeError, match="Missing API key"):
-        ChatInterfaze()
 
 
 def test_api_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -138,3 +137,50 @@ def test_cache_key_separates_two_api_keys() -> None:
     b = ChatInterfaze(api_key="sk_tenant_b")
     assert a._get_llm_string() != b._get_llm_string()
     assert "sk_tenant_a" not in a._get_llm_string()
+
+
+def test_cache_key_separates_two_key_functions() -> None:
+    a = ChatInterfaze(api_key=lambda: "sk_tenant_a")
+    b = ChatInterfaze(api_key=lambda: "sk_tenant_b")
+    assert a._get_llm_string() != b._get_llm_string()
+
+
+def test_cache_key_is_the_same_for_one_key_function() -> None:
+    def key() -> str:
+        return "sk_tenant_a"
+
+    assert ChatInterfaze(api_key=key)._get_llm_string() == ChatInterfaze(api_key=key)._get_llm_string()
+
+
+# Each process numbers its key functions from 1, so a shared LLM cache sees the same count twice.
+_FIRST_KEY_FUNCTION_ID = (
+    "import warnings; warnings.simplefilter('ignore');"
+    "from interfaze_langchain import ChatInterfaze;"
+    "print(ChatInterfaze(api_key=lambda: 'sk')._identifying_params['interfaze_key'])"
+)
+
+
+def test_cache_key_separates_key_functions_from_two_processes() -> None:
+    ids = {
+        subprocess.run(
+            [sys.executable, "-c", _FIRST_KEY_FUNCTION_ID], capture_output=True, text=True, check=True
+        ).stdout
+        for _ in range(2)
+    }
+    assert len(ids) == 2
+
+
+@pytest.fixture
+def llm_cache() -> Iterator[None]:
+    set_llm_cache(InMemoryCache())
+    yield
+    set_llm_cache(None)
+
+
+@respx.mock
+@pytest.mark.usefixtures("llm_cache")
+def test_two_key_functions_send_two_requests() -> None:
+    route = mock_json(BASIC)
+    ChatInterfaze(api_key=lambda: "sk_tenant_a").invoke("q")
+    ChatInterfaze(api_key=lambda: "sk_tenant_b").invoke("q")
+    assert route.call_count == 2

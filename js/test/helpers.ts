@@ -6,12 +6,10 @@ export const VIDEO_URL = "https://download.samplelib.com/mp4/sample-5s.mp4";
 export interface CapturedRequest {
   url: string;
   body: Record<string, unknown> | undefined;
+  headers: Headers;
 }
 
-export function mockChat(
-  responder: (req: CapturedRequest) => Response,
-  extraFields: Partial<ChatInterfazeFields> = {}
-): { model: ChatInterfaze; calls: CapturedRequest[] } {
+export function recordingFetch(responder: (req: CapturedRequest) => Response): { fetch: typeof fetch; calls: CapturedRequest[] } {
   const calls: CapturedRequest[] = [];
   const fetchImpl = async (input: unknown, init: RequestInit = {}): Promise<Response> => {
     const url = typeof input === "string" ? input : (input as Request).url;
@@ -23,10 +21,18 @@ export function mockChat(
     } catch {
       body = undefined;
     }
-    const req: CapturedRequest = { url, body };
+    const req: CapturedRequest = { url, body, headers: new Headers((init.headers ?? (input as Request).headers) as HeadersInit) };
     calls.push(req);
     return responder(req);
   };
+  return { fetch: fetchImpl as unknown as typeof fetch, calls };
+}
+
+export function mockChat(
+  responder: (req: CapturedRequest) => Response,
+  extraFields: Partial<ChatInterfazeFields> = {}
+): { model: ChatInterfaze; calls: CapturedRequest[] } {
+  const { fetch: fetchImpl, calls } = recordingFetch(responder);
   const model = new ChatInterfaze({
     apiKey: "test-key",
     maxRetries: 0,
